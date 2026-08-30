@@ -145,6 +145,69 @@ Nên bấm ghi phiên trước khi làm bước 2. Lần đầu tiếp xúc ph�
 chạy không lặp lại được; nếu camera làm gì đó bất ngờ, bản ghi cho phép tua lại
 xem đã gửi gì ngay trước đó.
 
+### Hình ảnh camera hiện ra ở đâu
+
+Đúng hai khung bạn đã thấy với nguồn tổng hợp — ở đầu trang, ngay dưới thanh nút.
+Giao diện không đổi gì cả; chỉ nguồn khung hình đổi. Nút **Video** và **Layout**
+vẫn hoạt động y hệt.
+
+```
+C12 ──RTSP :554 stream=1──┐
+     (1280×720 @30, H.265) │
+                           ├→ cv2 decode → FrameBus → encode JPEG → <img src="/video/visible">
+C12 ──RTSP :555 stream=2──┘   (mỗi luồng    (giữ 1     (1 lần cho     <img src="/video/thermal">
+     (384×288 @25, H.265)       1 thread)     khung)     mọi client)
+```
+
+Hai luồng đi **hai cổng RTSP khác nhau** và chạy độc lập hoàn toàn. Ảnh nhiệt
+384×288 được server phóng ×2 trước khi gửi ra.
+
+Lệnh chạy *đơn giản hơn* lệnh dùng simulator, vì `--video live` vốn đã là mặc
+định:
+
+```bash
+.venv/bin/python -m c12ctl.web.app
+```
+
+App sẽ mở đúng hai URI này:
+
+```
+visible  rtsp://192.168.144.108:554/stream=1
+thermal  rtsp://192.168.144.108:555/stream=2
+```
+
+Hai điều dễ vấp:
+
+- **Đừng truyền `--video synthetic`.** Cắm camera vào mà vẫn để cờ đó thì bạn vẫn
+  đang xem ảnh do máy sinh ra.
+- **`--host` điều khiển cả hai đường** — nó vừa là đích lệnh UDP, vừa là địa chỉ
+  RTSP. Trỏ vào simulator bằng `--host 127.0.0.1` thì không có video thật, vì ở
+  đó không có RTSP server nào. Với camera thật, cứ để mặc định.
+
+Trên Rubik Pi 3, thêm `--decoder v4l2h265dec` để decode bằng phần cứng.
+
+### Phân biệt hình thật với hình giả lập
+
+Nguồn tổng hợp nhìn là biết: dải màu SMPTE, đồng hồ và một vạch quét chạy ngang.
+Chắc chắn hơn thì gọi `GET /api/video`, trường `uri` của mỗi luồng sẽ là
+`rtsp://…` chứ không phải `synthetic:visible`.
+
+Dòng chữ nhỏ trên mỗi khung là số đo đang chạy thật: fps vào, fps ra, độ trễ, ms
+encode, KB mỗi khung. Số nhảy nghĩa là khung đang về.
+
+### Nếu khung video vẫn đen
+
+`frames=0` trong `/api/video`, và `/video/<name>/snapshot.jpg` trả 503, đều có
+nghĩa là chưa nhận được gì. Kiểm tra theo thứ tự:
+
+1. Bấm **Preflight** rồi đọc hai thẻ `RTSP 554` và `RTSP 555` — chúng kiểm tra
+   trực tiếp cổng video.
+2. **Camera đã khởi động xong chưa?** Luồng RTSP chỉ mở sau khi boot xong, không
+   mở ngay lúc cấp nguồn.
+3. IP của host đã nằm trong dải `192.168.144.x` chưa?
+4. Kiểm tra ngoài app: `ffplay rtsp://192.168.144.108:554/stream=1`. Nếu ffplay
+   cũng đen thì vấn đề ở camera hoặc mạng, không phải ở app này.
+
 ### Trước khi ARM gimbal
 
 - Kiểm tra không gian quanh gimbal đã trống — dây cáp có thể bị quấn.
@@ -209,9 +272,9 @@ sửa — thường là gán IP tĩnh ở mục 5. Nếu vẫn muốn quét, th�
 
 ### Khung video đen khi dùng `--video live`
 
-Luồng RTSP chỉ mở sau khi camera khởi động xong. Xem thẻ Preflight cho RTSP
-554 / 555. Trên máy dev này thiếu các phần tử H.265 của GStreamer, nhưng không
-sao: `cv2` được build kèm FFMPEG nên decode RTSP H.265 trực tiếp được.
+Xem [Nếu khung video vẫn đen](#nếu-khung-video-vẫn-đen) để có thứ tự kiểm tra đầy
+đủ. Lưu ý việc máy dev này thiếu các phần tử H.265 của GStreamer **không phải**
+nguyên nhân: `cv2` được build kèm FFMPEG nên decode RTSP H.265 trực tiếp được.
 
 ### Máy có cài ROS thì pytest không collect được
 

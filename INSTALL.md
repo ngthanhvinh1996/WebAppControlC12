@@ -150,6 +150,69 @@ Start a session recording before step 2. First contact with real hardware is a
 run you cannot repeat; if the camera does something unexpected, the recording
 lets you replay what was sent immediately before it.
 
+### Where the camera image appears
+
+In the same two panels you saw with the synthetic source — at the top of the
+page, under the button bar. The interface does not change; only the source of the
+frames does. The **Video** and **Layout** buttons behave exactly as before.
+
+```
+C12 ──RTSP :554 stream=1──┐
+     (1280×720 @30, H.265) │
+                           ├→ cv2 decode → FrameBus → JPEG encode → <img src="/video/visible">
+C12 ──RTSP :555 stream=2──┘   (one thread   (latest     (once for     <img src="/video/thermal">
+     (384×288 @25, H.265)       per stream)   frame)      all clients)
+```
+
+The two streams arrive on **different RTSP ports** and run fully independently.
+The 384×288 thermal image is upscaled ×2 server-side before it is sent.
+
+The command is *simpler* than the simulator one, because `--video live` is
+already the default:
+
+```bash
+.venv/bin/python -m c12ctl.web.app
+```
+
+It opens exactly these two URIs:
+
+```
+visible  rtsp://192.168.144.108:554/stream=1
+thermal  rtsp://192.168.144.108:555/stream=2
+```
+
+Two easy mistakes:
+
+- **Do not pass `--video synthetic`.** With the camera connected you would still
+  be watching generated frames.
+- **`--host` drives both paths** — it is the UDP command endpoint *and* the RTSP
+  host. Pointing it at the simulator with `--host 127.0.0.1` means no real video,
+  because nothing serves RTSP there. With real hardware, leave it at the default.
+
+On the Rubik Pi 3, add `--decoder v4l2h265dec` for hardware decoding.
+
+### Telling live frames from synthetic ones
+
+The synthetic source is unmistakable: SMPTE colour bars, a clock and a sweeping
+vertical bar. For certainty, `GET /api/video` reports each stream's `uri` —
+`rtsp://…` rather than `synthetic:visible`.
+
+The small caption on each panel is live measurement: input fps, output fps,
+latency, encode time, KB per frame. Numbers moving means frames are arriving.
+
+### If a video panel stays black
+
+`frames=0` in `/api/video`, and `/video/<name>/snapshot.jpg` returning 503, both
+mean nothing has arrived yet. Check in this order:
+
+1. Press **Preflight** and read the `RTSP 554` and `RTSP 555` cards — they test
+   the video ports directly.
+2. **Has the camera finished booting?** The RTSP streams open only after boot,
+   not the moment power is applied.
+3. Is the host address on the `192.168.144.x` subnet?
+4. Test outside this app: `ffplay rtsp://192.168.144.108:554/stream=1`. If that
+   is black too, the problem is the camera or the network, not this app.
+
 ### Before arming the gimbal
 
 - Keep the space around the gimbal clear — cables can get wound up.
@@ -214,10 +277,9 @@ To sweep anyway, add `--skip-preflight`.
 
 ### The video panel stays black with `--video live`
 
-The RTSP streams only open once the camera has finished booting. Check the
-Preflight card for RTSP 554 / 555. On this dev machine the GStreamer H.265
-elements are missing, which does not matter: `cv2` is built with FFMPEG and
-decodes RTSP H.265 directly.
+See [If a video panel stays black](#if-a-video-panel-stays-black) for the full
+check order. Note that the missing GStreamer H.265 elements on this dev machine
+are not the cause: `cv2` is built with FFMPEG and decodes RTSP H.265 directly.
 
 ### Tests fail to collect on a machine with ROS installed
 
