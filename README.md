@@ -1,6 +1,6 @@
 # c12ctl — web app điều khiển Skydroid C12
 
-Trạng thái: **pha 0–5 xong phần phần mềm** — chạy đầy đủ với simulator và nguồn
+Trạng thái: **pha 0–6 xong phần phần mềm** (pha 6 làm phần không bị chặn) — chạy đầy đủ với simulator và nguồn
 video tổng hợp. Còn chờ phần cứng để xác nhận trên C12 thật. Xem
 [PLAN_WEBAPP_C12.md](PLAN_WEBAPP_C12.md) cho phân tích giao thức, kiến trúc và
 lộ trình 7 pha.
@@ -296,13 +296,99 @@ dụng là ra lệnh chuyển động thật rồi xem gimbal có nhúc nhích k
 cách làm gimbal quay là đánh đổi sai. Mặc định dùng hai gói rời `GSY`+`GSP` —
 luôn chạy. Bật `--use-gsm` khi đã biết firmware đủ mới.
 
+## Pha 6 — ghi phiên đồng bộ
+
+Pha 6 có bốn hạng mục, và **ba trong số đó tự chặn mình**: go2rtc/WebRTC chỉ làm
+"nếu số đo pha 2 cho thấy cần" (số đo hiện có nói là không, và phép đo phân xử
+phải chạy trên Rubik Pi 3), còn hiệu chuẩn FOV và hoà trộn hai luồng đều cần cảnh
+quay thật để căn chỉnh. Hạng mục còn lại không vướng gì, và đã làm xong.
+
+Câu hỏi mà nó sinh ra để trả lời, đúng câu hay gặp khi dò một thiết bị lạ: **ta
+đã gửi gì, ngay trước lúc camera làm điều đó?**
+
+Trả lời được câu đó từ ba nguồn rời — packet log một nơi, file video một nơi, số
+tư thế trôi qua terminal — nghĩa là phải căn chỉnh đồng hồ bằng tay, và đó đúng
+là loại việc làm lạc mất năm giây thú vị nhất. Nên mọi thứ vào **một thư mục,
+trên một đồng hồ**:
+
+```bash
+.venv/bin/python -m c12ctl.web.app --video synthetic --record-fps 4
+```
+
+Bấm **Record session**, hoặc gọi API:
+
+```bash
+curl -X POST localhost:8000/api/session/start -d '{"note":"bay thử"}'
+curl -X POST localhost:8000/api/session/stop
+curl localhost:8000/api/session/20260830T150611          # bản tóm tắt
+```
+
+| Endpoint | |
+|---|---|
+| `GET /api/session` | trạng thái + danh sách phiên đã ghi |
+| `POST /api/session/start` | bắt đầu, kèm ghi chú tuỳ ý |
+| `POST /api/session/stop` | dừng, trả về bản tóm tắt |
+| `GET /api/session/<id>` | tóm tắt: thời lượng, thống kê lệnh, dải tư thế, mốc |
+| `GET /api/session/<id>/frame/<stream>/<n>.jpg` | rút một khung bất kỳ |
+
+### Cấu trúc một phiên
+
+```
+logs/sessions/20260830T150611/
+├── meta.json      cấu hình lúc ghi + bản tóm tắt lúc dừng
+├── events.jsonl   mỗi dòng một sự kiện, theo đúng thứ tự đồng hồ đơn điệu
+├── visible.mjpeg  các khung JPEG nối đuôi nhau
+└── thermal.mjpeg
+```
+
+Đo thật với simulator, 13 giây có gimbal quay: **578 sự kiện — 348 gói, 130 gói
+tư thế, 98 khung hình, 2.2 MB**. Trích một đoạn dòng thời gian:
+
+```
+t+0.008   frame     thermal #1 (22962 byte)
+t+0.010   packet    tx IMG 04
+t+0.011   frame     visible #1 (23220 byte)
+t+0.083   packet    rx GAC 000000000000
+t+0.083   attitude  yaw=0.00 pitch=0.00
+```
+
+Bảng thống kê lệnh trong bản tóm tắt đọc được ngay ra hành vi: `GSY 56/0` và
+`GSP 56/0` là vòng điều khiển 20 Hz, `GAC 0/130` là luồng đẩy tư thế, `IMG 12/11`
+là 12 lần ghi/đọc palette và 11 lần camera trả lời.
+
+### Bốn quyết định
+
+**Một đồng hồ, và là `time.monotonic()`.** Nó vốn đã là gốc thời gian của
+`Frame.captured_at`, của nhật ký gói, và của telemetry — nên căn chỉnh là miễn
+phí. Giờ treo tường được ghi kèm chỉ để người đọc dễ định vị, không bao giờ dùng
+để sắp thứ tự, vì nó nhảy được.
+
+**JPEG nối đuôi, không phải container.** Không cần codec, sống sót khi file bị
+cắt cụt (crash giữa chừng vẫn đọc được mọi khung trước đó), và mỗi khung có sẵn
+byte offset trong `events.jsonl` nên lấy khung thứ N là một lần `seek` chứ không
+phải quét cả file.
+
+**Ghi hình không tốn thêm một lần encode nào.** Recorder giữ một *viewer* trên
+luồng MJPEG, nên nó dùng lại đúng bản encode chung — đúng nguyên tắc "encode một
+lần cho mọi client" của pha 2. Có người đang xem thì ghi hình gần như miễn phí.
+
+**Nhịp ghi thấp có chủ ý**, mặc định 5 fps. Nguồn 30 fps × 24 KB là 720 KB/s mỗi
+luồng — đầy thẻ trước khi kịp có ích cho việc dò giao thức.
+
+### Hai giới hạn tự cưỡng chế
+
+Recorder **tự dừng** khi chạm trần dung lượng (mặc định 512 MB) hoặc trần thời
+gian (mặc định 1 giờ), và ghi rõ cái nào đã cắt. Đầy thẻ giữa lúc bay thử trên Pi
+là kết cục tệ hơn nhiều so với một bản ghi kết thúc sớm và nói rõ lý do. Chỉnh
+bằng `--record-max-mb` và `--record-max-seconds`; tắt hẳn bằng `--no-record`.
+
 ## Test
 
 ```bash
 .venv/bin/python -m pytest
 ```
 
-487 test. Bao gồm 43 literal đã kiểm chứng từ cả hai tài liệu nguồn làm ca vàng cho
+524 test. Bao gồm 43 literal đã kiểm chứng từ cả hai tài liệu nguồn làm ca vàng cho
 codec, property test cho bộ mã hoá, và integration test chạy qua socket thật với
 simulator.
 
@@ -378,12 +464,14 @@ c12ctl/
 ├── services/telemetry.py  GAA/GAC, tư thế thời gian thực
 ├── services/gimbal.py     vòng 20 Hz, watchdog, giới hạn mềm
 ├── services/camera.py     đệm trạng thái + lệnh ghi có xác nhận
+├── services/session.py    ghi phiên đồng bộ video + lệnh + tư thế
 ├── web/app.py             FastAPI + cổng rủi ro + WS điều khiển
 └── sim/c12_sim.py         camera giả lập
 ```
 
-Còn lại: pha 6 (chỉ làm nếu số đo pha 2 cho thấy cần) và phần xác nhận trên phần
-cứng thật của mọi pha đã làm.
+Còn lại của pha 6 — cả ba đều **chờ phần cứng chứ không chờ thời gian**:
+go2rtc/WebRTC (chờ số đo trên Rubik Pi 3), hiệu chuẩn FOV và click-để-ngắm, hoà
+trộn hai luồng. Cộng với phần xác nhận trên C12 thật của mọi pha đã làm.
 
 ## Script cũ
 

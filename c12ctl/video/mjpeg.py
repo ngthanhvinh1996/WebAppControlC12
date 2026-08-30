@@ -18,6 +18,7 @@ Measure first, optimize later — see PLAN_WEBAPP_C12.md §4.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -171,6 +172,22 @@ class MjpegStream:
                 self._encoder = None
                 self.stats.out_fps.reset()
                 log.info("stream %s: encoder asleep (no clients left)", self.name)
+
+    @contextlib.asynccontextmanager
+    async def viewer(self):
+        """Count as a viewer for as long as the block runs.
+
+        Non-HTTP consumers — the session recorder — need this: the encoder only
+        runs while someone is watching, so a recorder that merely called
+        :meth:`next_jpeg` would wait forever whenever no browser had the stream
+        open. Holding a viewer also means recording costs **zero extra encoding**
+        when somebody is already watching: one encode still serves everyone.
+        """
+        await self._acquire()
+        try:
+            yield self
+        finally:
+            await self._release()
 
     async def next_jpeg(self, after: int = 0,
                         timeout: float = 5.0) -> tuple[bytes, int] | None:

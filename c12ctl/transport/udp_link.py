@@ -101,6 +101,7 @@ class UdpLink:
         self._writer_task: asyncio.Task | None = None
         self._pending: dict[str, list[asyncio.Future]] = {}
         self._subscribers: list[Callable[[Frame], None | Awaitable[None]]] = []
+        self._journal_sinks: list[Callable[[dict], None]] = []
         self._last_tx = 0.0
         self._buffer = ""
 
@@ -321,15 +322,42 @@ class UdpLink:
 
     # -------------------------------------------------------------------- log
 
+    def add_journal_sink(self, sink: Callable[[dict], None]) -> None:
+        """Receive every TX/RX packet as a record dict.
+
+        Separate from :meth:`subscribe`, which only sees parsed inbound frames.
+        A sink also sees outbound packets and malformed inbound ones — which is
+        what a session recording needs in order to answer "what did we send just
+        before the camera did that".
+        """
+        self._journal_sinks.append(sink)
+
+    def remove_journal_sink(self, sink) -> None:
+        with contextlib.suppress(ValueError):
+            self._journal_sinks.remove(sink)
+
     def _journal(self, direction: str, raw: str, frame: Frame | None = None) -> None:
-        if self._log_file is None:
+        if self._log_file is None and not self._journal_sinks:
             return
+        if frame is None:
+            # Outbound packets reach here as a plain string, so without this the
+            # journal would record *that* we sent something but not *what* —
+            # exactly the half that matters when reading a session back. Parsing
+            # costs a short string split and only happens while journalling.
+            with contextlib.suppress(FrameError):
+                frame = parse(raw, verify=False)
         record = {"t": time.time(), "mono": time.monotonic(), "dir": direction, "raw": raw}
         if frame is not None:
             record |= {"cmd3": frame.cmd3, "data": frame.data,
                        "src": frame.src, "dest": frame.dest, "rw": frame.rw}
-        self._log_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-        self._log_file.flush()
+        if self._log_file is not None:
+            self._log_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._log_file.flush()
+        for sink in list(self._journal_sinks):
+            try:
+                sink(record)
+            except Exception:  # pragma: no cover - a bad sink must not kill the link
+                log.exception("journal sink failed on a %s record", direction)
 
 
 def _reject(name: str) -> Command:

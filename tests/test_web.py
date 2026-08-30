@@ -614,6 +614,119 @@ async def test_camera_apply_bad_argument_is_400(cclient):
     assert cclient.sim.state.palette == "01", "no packet may leave the backend"
 
 
+# --------------------------------------------------------------------------
+# Session recording (phase 6)
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def sclient(tmp_path):
+    from c12ctl.services.session import SessionRecorder
+
+    sim = C12Simulator(seed=71)
+    await sim.start("127.0.0.1", 0)
+    link = UdpLink("127.0.0.1", sim.port, local_port=0, min_tx_gap=0.001)
+    await link.start()
+    rec = SessionRecorder(link, root=tmp_path / "sessions")
+    app = create_app(link, Session(), recorder=rec)
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://t"
+    ) as c:
+        c.sim, c.rec = sim, rec
+        yield c
+    await rec.close()
+    await link.close()
+    await sim.close()
+
+
+async def test_session_start_stop_round_trip(sclient):
+    import asyncio
+
+    started = (await sclient.post("/api/session/start",
+                                  json={"note": "round trip"})).json()
+    assert started["recording"] is True
+    assert (await sclient.get("/api/session")).json()["recording"] is True
+
+    await sclient.post("/api/cmd/camera.snap")
+    await asyncio.sleep(0.1)
+
+    stopped = (await sclient.post("/api/session/stop")).json()
+    assert stopped["recording"] is False
+    assert stopped["stats"]["packets"] > 0
+
+    body = (await sclient.get("/api/session")).json()
+    assert body["recording"] is False
+    assert [s["id"] for s in body["sessions"]] == [started["id"]]
+
+
+async def test_session_summary_endpoint(sclient):
+    import asyncio
+
+    sid = (await sclient.post("/api/session/start")).json()["id"]
+    await sclient.post("/api/cmd/read.model")
+    await asyncio.sleep(0.1)
+    await sclient.post("/api/session/stop")
+
+    body = (await sclient.get("/api/session/" + sid)).json()
+    assert body["kinds"]["packet"] > 0
+    assert body["commands"]["MOD"]["tx"] >= 1
+
+
+async def test_second_start_is_409(sclient):
+    await sclient.post("/api/session/start")
+    try:
+        r = await sclient.post("/api/session/start")
+        assert r.status_code == 409
+        assert "already running" in r.json()["detail"]
+    finally:
+        await sclient.post("/api/session/stop")
+
+
+async def test_unknown_session_is_404(sclient):
+    assert (await sclient.get("/api/session/20990101T000000")).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "sid",
+    [
+        "%2e%2e",                       # ".."
+        "%2e%2e%2f%2e%2e",              # "../.."
+        "%2e%2e%2fetc%2fpasswd",        # "../etc/passwd"
+        "%2fetc%2fpasswd",              # "/etc/passwd"
+        "x" * 65,                       # longer than any real id
+        "a b",                          # a space
+    ],
+)
+async def test_session_id_cannot_escape_the_recording_root(sclient, sid):
+    """The id arrives from a URL and is used to build a filesystem path.
+
+    Traversal attempts are percent-encoded on purpose: a bare ``../..`` is
+    normalised away by the HTTP client before it is ever sent, so testing that
+    form would test httpx rather than this app.
+
+    Two layers may reject: the router never matches an id containing a slash
+    (404), and this app's own guard rejects the rest (400). What must never
+    happen is a 200 serving something from outside the recording root.
+    """
+    r = await sclient.get("/api/session/" + sid)
+    assert r.status_code in (400, 404), sid
+
+
+@pytest.mark.parametrize("sid", ["%2e%2e", "%2e", "x" * 65, "a b", "a$b"])
+async def test_malformed_session_id_is_refused_by_the_guard(sclient, sid):
+    """The ids that do reach the handler must be refused by name, not by luck."""
+    r = await sclient.get("/api/session/" + sid)
+    assert r.status_code == 400, sid
+    assert "malformed" in r.json()["detail"]
+
+
+async def test_session_routes_503_when_disabled(client):
+    """The app runs without recording — earlier phases work as before."""
+    assert (await client.get("/api/session")).json()["enabled"] is False
+    assert (await client.post("/api/session/start")).status_code == 503
+    assert (await client.get("/api/session/whatever")).status_code == 503
+
+
 async def test_camera_routes_503_when_disabled(client):
     """The app runs without the camera cache — phases 1–2 work as before."""
     assert (await client.get("/api/camera")).json()["enabled"] is False

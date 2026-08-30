@@ -1,11 +1,11 @@
-# Điểm dừng — 2026-08-30
+# Điểm dừng — 2026-08-30 (cuối ngày)
 
 Ghi lại để mai làm tiếp. Trạng thái chi tiết ở [README.md](README.md), phân tích
 giao thức và lộ trình ở [PLAN_WEBAPP_C12.md](PLAN_WEBAPP_C12.md).
 
 ## Đang ở đâu
 
-487 test xanh (`.venv/bin/python -m pytest`). Pha **0–5 xong phần phần mềm** —
+524 test xanh (`.venv/bin/python -m pytest`). Pha **0–6 xong phần phần mềm** —
 chạy đầy đủ với simulator và nguồn video tổng hợp.
 
 | Pha | | Trạng thái |
@@ -16,7 +16,7 @@ chạy đầy đủ với simulator và nguồn video tổng hợp.
 | 3 | Lệnh ghi cho camera | ✅ phần mềm xong · ⏳ chờ phần cứng |
 | 4 | Telemetry GAA/GAC | ✅ phần mềm xong · ⏳ chờ phần cứng |
 | 5 | Điều khiển gimbal | ✅ phần mềm xong · ⏳ chờ phần cứng |
-| 6 | Tối ưu, mở rộng | ❌ chưa làm (chỉ làm nếu số đo pha 2 cho thấy cần) |
+| 6 | Tối ưu, mở rộng | ✅ ghi phiên xong · ⛔ 3 hạng mục còn lại bị chặn bởi phần cứng |
 
 ## Chạy lại từ đầu
 
@@ -33,7 +33,36 @@ cd ~/workdir/Qualcomm/Rubik_Pi_3/Camera/Skydroid-C12/WebAppControlC12
 
 Mở <http://localhost:8000>.
 
-## Pha 3 vừa làm xong — tóm tắt
+## Pha 6 vừa làm xong — ghi phiên đồng bộ
+
+`c12ctl/services/session.py` + nút **Record session** + `POST /api/session/*`.
+
+Video, lệnh và tư thế vào một thư mục trên **một đồng hồ** (`time.monotonic()`),
+nên đọc lại được "ta gửi gì ngay trước lúc camera làm điều đó". Đo thật: 13 giây
+có gimbal quay → 578 sự kiện, 2.2 MB.
+
+Ba điều đáng nhớ:
+
+- **Ghi hình không tốn thêm encode nào** — recorder giữ một *viewer* trên luồng
+  MJPEG nên dùng lại bản encode chung của pha 2.
+- **Tự dừng** khi chạm trần dung lượng (512 MB) hoặc thời gian (1 giờ), và nói rõ
+  cái nào cắt. Đầy thẻ giữa lúc bay thử trên Pi là kết cục tệ hơn nhiều.
+- **JPEG nối đuôi + offset trong `events.jsonl`**, không dùng container: không cần
+  codec, sống sót khi file bị cắt cụt, lấy khung thứ N là một lần `seek`.
+
+### Ba hạng mục pha 6 CHƯA làm — và vì sao
+
+Không phải vì thiếu thời gian, mà vì **cả ba đều cần phần cứng mới có nghĩa**:
+
+- **go2rtc + WebRTC** — kế hoạch tự đặt điều kiện "chỉ làm nếu số đo pha 2 cho
+  thấy cần". Số đo trên máy dev (30 fps, trễ 6 ms) nói là *không* cần. Phép đo
+  phân xử phải chạy trên Rubik Pi 3.
+- **Hiệu chuẩn FOV + click-để-ngắm** — quy trình hiệu chuẩn là *quay một góc đã
+  biết rồi đo dịch chuyển pixel*; không có camera thật thì không có gì để đo.
+- **Hoà trộn hai luồng, overlay điểm nóng** — cần cảnh quay thật để căn hai camera
+  lệch trục. Trộn hai nguồn tổng hợp chỉ ra ảnh vô nghĩa.
+
+## Pha 3 — tóm tắt
 
 `c12ctl/services/camera.py` + tab **Camera** + `POST /api/camera/<action>`.
 
@@ -76,10 +105,21 @@ sudo ip addr add 192.168.144.20/24 dev enp8s0 && sudo ip link set enp8s0 up
 Pha 3 trên phần cứng thật trả lời gần hết danh sách câu hỏi mở bên dưới, mà
 không phải gửi lệnh gây chuyển động nào.
 
-### B. Không có phần cứng → pha 6, nhưng chỉ khi số đo nói là cần
+**Bấm Record session trước khi làm bước 2.** Lần đầu nói chuyện với phần cứng
+thật là lần chạy không lặp lại được: nếu camera làm gì đó bất ngờ, bản ghi cho
+phép tua lại xem đã gửi gì ngay trước đó, thay vì phải dựng lại tình huống.
 
-Số đo pha 2 trên máy dev (30 fps, độ trễ 6 ms) **chưa** cho thấy cần go2rtc /
-WebRTC. Đo lại trên Rubik Pi 3 rồi hẵng quyết.
+### B. Không có phần cứng → gần như đã cạn việc
+
+Pha 0–6 xong phần làm được mà không cần camera. Ba hạng mục pha 6 còn lại đều
+**chờ phần cứng chứ không chờ thời gian** (xem mục trên). Việc còn lại đáng làm
+mà không cần camera, theo thứ tự giá trị giảm dần:
+
+- **Wizard xác minh góc** (PLAN §6) — bật `GAA`, gửi `goto` +10°, đọc `GAC`, báo
+  sai lệch. Dựng và test được với simulator; chạy thật thì cần camera.
+- **Protocol Lab** (PLAN §6) — bản GUI của `c12_probe.py send`, vẫn qua allowlist.
+- **Trang Health** — gom link/mất gói/RTSP/phiên bản/thẻ nhớ vào một chỗ.
+- Đo lại pha 2 **trên Rubik Pi 3** — đây chính là phép đo phân xử cho go2rtc.
 
 ## Checklist thủ công pha 5 — không tự động hoá được
 

@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import re
 import signal
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from ..protocol.registry import COMMANDS, CommandNotAllowed
 from ..services import findings, preflight
 from ..services.camera import CameraService
 from ..services.gimbal import GimbalController, NotArmed
+from ..services.session import SessionReader, SessionRecorder
 from ..services.telemetry import TelemetryService
 from ..protocol.types import RiskLevel
 from ..transport.udp_link import DEFAULT_HOST, DEFAULT_PORT, UdpLink
@@ -70,6 +72,10 @@ class CameraRequest(BaseModel):
     args: list = Field(default_factory=list)
 
 
+class SessionRequest(BaseModel):
+    note: str = ""
+
+
 class Session:
     """Session state. In phase 0 this was only the ARM flag; phase 5 attached the
     watchdog to it."""
@@ -95,8 +101,9 @@ def create_app(link: UdpLink, session: Session,
                video: VideoManager | None = None,
                gimbal: GimbalController | None = None,
                telemetry: TelemetryService | None = None,
-               camera: CameraService | None = None) -> FastAPI:
-    app = FastAPI(title="C12 Ground Station", version="0.6.0")
+               camera: CameraService | None = None,
+               recorder: SessionRecorder | None = None) -> FastAPI:
+    app = FastAPI(title="C12 Ground Station", version="0.7.0")
     app.state.link = link
     app.state.session = session
     app.state.findings_path = findings_path
@@ -104,6 +111,7 @@ def create_app(link: UdpLink, session: Session,
     app.state.gimbal = gimbal
     app.state.telemetry = telemetry
     app.state.camera = camera
+    app.state.recorder = recorder
 
     # ---------------------------------------------------------------- registry
 
@@ -340,6 +348,61 @@ def create_app(link: UdpLink, session: Session,
             raise HTTPException(status_code=400, detail=str(exc)) from None
         return result.as_dict()
 
+    # --------------------------------------------------------------- sessions
+
+    def _recorder() -> SessionRecorder:
+        if app.state.recorder is None:
+            raise HTTPException(status_code=503, detail="session recording is disabled")
+        return app.state.recorder
+
+    def _session_path(sid: str) -> Path:
+        """Resolve a session id to a directory, refusing anything that escapes.
+
+        The id reaches us from a URL, so it is untrusted input used to build a
+        filesystem path — the one place in this app where that happens.
+        """
+        rec = _recorder()
+        if not sid or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", sid) or sid in (".", ".."):
+            raise HTTPException(status_code=400, detail="malformed session id")
+        root = rec.root.resolve()
+        path = (root / sid).resolve()
+        if path != root and root not in path.parents:
+            raise HTTPException(status_code=400, detail="malformed session id")
+        if not (path / "meta.json").is_file():
+            raise HTTPException(status_code=404, detail="no recording named %r" % sid)
+        return path
+
+    @app.get("/api/session")
+    async def session_status():
+        if app.state.recorder is None:
+            return {"enabled": False, "recording": False, "sessions": []}
+        rec = app.state.recorder
+        return {"enabled": True, **rec.as_dict(), "sessions": rec.list_sessions()}
+
+    @app.post("/api/session/start")
+    async def session_start(body: SessionRequest | None = None):
+        rec = _recorder()
+        try:
+            return await rec.start(body.note if body else "")
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+
+    @app.post("/api/session/stop")
+    async def session_stop():
+        return await _recorder().stop("requested")
+
+    @app.get("/api/session/{sid}")
+    async def session_summary(sid: str):
+        return SessionReader(_session_path(sid)).summary()
+
+    @app.get("/api/session/{sid}/frame/{stream}/{index}.jpg")
+    async def session_frame(sid: str, stream: str, index: int):
+        data = SessionReader(_session_path(sid)).frame(stream, index)
+        if data is None:
+            raise HTTPException(status_code=404, detail="no such frame")
+        return Response(content=data, media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
+
     # --------------------------------------------------------------- commands
 
     @app.post("/api/cmd/{name}")
@@ -486,6 +549,18 @@ def build_parser() -> argparse.ArgumentParser:
                          "Camera tab)")
     ap.add_argument("--camera-interval", type=float, default=1.0, metavar="SEC",
                     help="camera state poll period")
+    ap.add_argument("--no-record", action="store_true",
+                    help="do not offer session recording")
+    ap.add_argument("--session-dir", default="logs/sessions", metavar="PATH",
+                    help="where session recordings are written")
+    ap.add_argument("--record-fps", type=float, default=5.0, metavar="FPS",
+                    help="recorded frames per second per stream. Low on purpose: "
+                         "the source rate would fill a card long before it earned "
+                         "its keep for protocol work")
+    ap.add_argument("--record-max-mb", type=float, default=512.0, metavar="MB",
+                    help="stop recording at this size, before the disk does")
+    ap.add_argument("--record-max-seconds", type=float, default=3600.0, metavar="SEC",
+                    help="stop a recording nobody remembered to stop")
     ap.add_argument("--use-gsm", action="store_true",
                     help="pack yaw and pitch into one GSM packet — half the "
                          "traffic at 20 Hz, but it needs gimbal firmware >= 0.5. "
@@ -551,8 +626,18 @@ async def _run(args) -> None:
             )
             await camera.start()
 
+    recorder = None
+    if not args.no_record:
+        recorder = SessionRecorder(
+            link, root=args.session_dir, video=video, telemetry=telemetry,
+            frame_fps=args.record_fps,
+            max_bytes=int(args.record_max_mb * 1024 * 1024),
+            max_seconds=args.record_max_seconds,
+        )
+
     app = create_app(link, session, findings_path=args.findings, video=video,
-                     gimbal=gimbal, telemetry=telemetry, camera=camera)
+                     gimbal=gimbal, telemetry=telemetry, camera=camera,
+                     recorder=recorder)
 
     config = uvicorn.Config(app, host=args.bind, port=args.http_port,
                             log_level="debug" if args.verbose else "info")
@@ -583,6 +668,10 @@ async def _run(args) -> None:
         else:
             for frame in reg.STOP_FRAMES:
                 link.send_frame(frame, priority=True)
+        # Close the recording before the sources it is reading from go away, so
+        # a session survives Ctrl-C with its meta.json summary intact.
+        if recorder is not None:
+            await recorder.close()
         if camera is not None:
             await camera.close()
         if telemetry is not None:

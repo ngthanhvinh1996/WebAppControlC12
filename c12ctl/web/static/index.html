@@ -151,6 +151,22 @@
             border-radius: 5px; font-size: 12.5px; line-height: 1.5;
             word-break: break-word; }
   #c-last .tag { margin-right: 6px; }
+
+  /* session recording */
+  button.rec.live { background: var(--bad-bg); border-color: var(--bad); color: var(--bad);
+                    font-weight: 600; }
+  #ses-list { display: grid; gap: 8px; margin-top: 12px; }
+  .ses { border: 1px solid var(--rule); border-radius: 6px; background: var(--card);
+         padding: 10px 12px; font-size: 13px; }
+  .ses .h { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .ses .id { font-family: "IBM Plex Mono", monospace; font-weight: 600; }
+  .ses .m { margin-left: auto; color: var(--muted); font-size: 12px;
+            font-family: "IBM Plex Mono", monospace; }
+  .ses .cmds { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 6px; }
+  .ses .cmds code { background: var(--sunk); padding: 1px 5px; border-radius: 3px; }
+  .ses .shots { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .ses .shots img { height: 62px; border-radius: 4px; border: 1px solid var(--rule);
+                    background: #000; }
 </style>
 
 <div class="wrap">
@@ -165,6 +181,7 @@
     </label>
     <button id="btn-pre">Preflight</button>
     <button id="btn-sweep">Sweep reads</button>
+    <button id="btn-rec" class="rec">Record session</button>
     <button class="stop" id="btn-stop">STOP</button>
   </div>
   <p id="status">Loading…</p>
@@ -247,6 +264,15 @@
         wound up. <kbd>Space</kbd> / <kbd>Esc</kbd> is an emergency stop at any time.
       </div>
     </div>
+  </div>
+
+  <div id="ses-wrap" class="hide">
+    <h2>Session recordings</h2>
+    <p class="note">
+      Video, command traffic and attitude on one monotonic clock, so a recording
+      can answer what was sent just before the camera did something.
+    </p>
+    <div id="ses-list"></div>
   </div>
 
   <div id="pre-wrap" class="hide">
@@ -419,6 +445,78 @@ $("#btn-stop").onclick = stop;
 addEventListener("keydown", e => {
   if (e.code === "Space" || e.code === "Escape") { e.preventDefault(); stop(); }
 });
+
+// ---------------------------------------------------------------- session
+
+let recOn = false, recTimer = null;
+
+async function initSession() {
+  const b = await (await fetch("/api/session")).json();
+  if (!b.enabled) { $("#btn-rec").disabled = true; return; }
+  $("#ses-wrap").classList.remove("hide");
+  renderSessions(b);
+}
+
+async function toggleRecord() {
+  const path = recOn ? "/api/session/stop" : "/api/session/start";
+  const body = recOn ? null : JSON.stringify({ note: notePrompt() });
+  const r = await fetch(path, {
+    method: "POST", headers: { "content-type": "application/json" }, body,
+  });
+  const b = await r.json();
+  if (!r.ok) { say(b.detail || "Recording request refused."); return; }
+  say(b.recording
+    ? `Recording ${b.id} — video, commands and attitude on one clock.`
+    : `Recording ${b.id} stopped (${b.stop_reason}): ${b.stats.events} events, `
+      + `${(b.stats.bytes_written / 1e6).toFixed(1)} MB.`);
+  await pollSession();
+}
+
+// A note costs one keystroke to skip and makes a recording findable later.
+const notePrompt = () => (prompt("Note for this recording (optional):") || "").slice(0, 200);
+
+function setRecUI(b) {
+  recOn = !!b.recording;
+  $("#btn-rec").classList.toggle("live", recOn);
+  $("#btn-rec").textContent = recOn
+    ? `Stop recording · ${Math.round(b.elapsed_s)}s`
+    : "Record session";
+}
+
+async function pollSession() {
+  if ($("#btn-rec").disabled) return;
+  try {
+    renderSessions(await (await fetch("/api/session")).json());
+  } catch (e) { /* server is down — stay quiet, try again next tick */ }
+}
+
+function renderSessions(b) {
+  if (!b.enabled) return;
+  setRecUI(b);
+  $("#ses-list").innerHTML = b.sessions.map(s => {
+    const sum = s.summary || {};
+    const cmds = Object.entries(sum.commands || {})
+      .map(([c, n]) => `<code>${esc(c)} ${n.tx}▲ ${n.rx}▼</code>`).join("");
+    const frames = Object.entries(sum.frames || {});
+    const shots = frames.map(([name]) =>
+      `<img alt="${esc(name)}" loading="lazy"
+            src="/api/session/${encodeURIComponent(s.id)}/frame/${encodeURIComponent(name)}/0.jpg">`
+    ).join("");
+    return `<div class="ses">
+      <div class="h">
+        <span class="id">${esc(s.id)}</span>
+        <span>${esc(s.note || "")}</span>
+        <span class="m">${sum.duration_s ?? "?"} s · ${s.size_mb} MB ·
+          ${(sum.kinds || {}).packet || 0} packets ·
+          ${frames.map(([n, c]) => `${c} ${esc(n)}`).join(" · ") || "no video"}</span>
+      </div>
+      ${cmds ? `<div class="cmds">${cmds}</div>` : ""}
+      ${shots ? `<div class="shots">${shots}</div>` : ""}
+    </div>`;
+  }).join("") || `<p class="note">No recordings yet.</p>`;
+}
+
+$("#btn-rec").onclick = toggleRecord;
 
 // ----------------------------------------------------------------- camera
 // Every camera write goes through /api/camera/<action>, and that endpoint does
@@ -724,7 +822,9 @@ async function initGimbal() {
   startHeartbeat();
 }
 
-initVideo().then(initCamera).then(initGimbal).then(() => say("Ready."));
+initVideo().then(initCamera).then(initSession).then(initGimbal)
+  .then(() => say("Ready."));
 setInterval(poll, 1000);
 setInterval(pollCamera, 1000);
+setInterval(pollSession, 2000);
 </script>
