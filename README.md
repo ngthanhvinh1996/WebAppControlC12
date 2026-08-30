@@ -7,7 +7,11 @@ lộ trình 7 pha.
 
 ## Cài đặt
 
+> 📖 Hướng dẫn build & chạy đầy đủ cho người mới clone về:
+> **[INSTALL.vi.md](INSTALL.vi.md)** · **[INSTALL.md](INSTALL.md)** (English)
+
 ```bash
+sudo apt install -y git python3-venv python3-opencv
 python3 -m venv --system-site-packages .venv
 .venv/bin/pip install -r requirements.txt
 ```
