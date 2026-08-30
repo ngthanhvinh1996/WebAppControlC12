@@ -98,7 +98,7 @@
   .note { color: var(--muted); font-size: 12.5px; line-height: 1.45; }
   .hide { display: none; }
 
-  /* điều khiển */
+  /* control */
   .ctl { display: grid; gap: 14px; grid-template-columns: 1fr;
          align-items: start; margin-top: 14px; }
   @media (min-width: 780px) { .ctl { grid-template-columns: 240px 1fr; } }
@@ -155,96 +155,96 @@
 
 <div class="wrap">
   <h1>C12 Ground Station</h1>
-  <p class="sub">Video MJPEG hai luồng · lệnh camera có xác nhận · điều khiển gimbal.</p>
+  <p class="sub">Two MJPEG streams · verified camera commands · gimbal control.</p>
 
   <div class="bar">
     <button id="btn-video" class="on">Video</button>
-    <button id="btn-layout">Bố cục: cạnh nhau</button>
-    <label class="note">Nhiệt:
-      <select id="sel-cmap"><option value="">— camera tự tô —</option></select>
+    <button id="btn-layout">Layout: side by side</button>
+    <label class="note">Thermal:
+      <select id="sel-cmap"><option value="">— camera colorizes —</option></select>
     </label>
     <button id="btn-pre">Preflight</button>
-    <button id="btn-sweep">Quét lệnh đọc</button>
+    <button id="btn-sweep">Sweep reads</button>
     <button class="stop" id="btn-stop">STOP</button>
   </div>
-  <p id="status">Đang tải…</p>
+  <p id="status">Loading…</p>
 
   <div id="views" class="views side"></div>
 
   <h2>Camera</h2>
   <div id="cam-off" class="pad note hide">
-    Đệm trạng thái camera tắt. Chạy lại không có <code>--no-camera</code>.
+    Camera state cache is off. Restart without <code>--no-camera</code>.
   </div>
   <div id="cam" class="cam hide">
     <div class="pad">
       <div class="row">
-        <button id="c-snap">Chụp ảnh</button>
-        <button id="c-rec">Ghi hình</button>
+        <button id="c-snap">Snapshot</button>
+        <button id="c-rec">Record</button>
         <button id="c-zout">Zoom −</button>
         <button id="c-zin">Zoom +</button>
-        <button id="c-refresh">Đọc lại</button>
+        <button id="c-refresh">Refresh</button>
       </div>
       <div class="row">
         <label class="note">Palette: <select id="c-pal"></select></label>
-        <label class="note">Độ phân giải: <select id="c-res"></select></label>
+        <label class="note">Resolution: <select id="c-res"></select></label>
       </div>
       <dl class="kv">
         <dt>Model</dt><dd id="c-model">—</dd>
         <dt>Firmware</dt><dd id="c-ver">—</dd>
-        <dt>Thẻ nhớ</dt><dd id="c-sd">—</dd>
+        <dt>SD card</dt><dd id="c-sd">—</dd>
         <dt>Zoom</dt><dd id="c-zoom">—</dd>
-        <dt>Đang ghi</dt><dd id="c-recv">—</dd>
+        <dt>Recording</dt><dd id="c-recv">—</dd>
       </dl>
       <p id="c-last" class="note">
-        Mỗi lệnh ghi đều được <b>đọc lại</b> để xác nhận — kết quả hiện ở đây.
+        Every write is <b>read back</b> to confirm it — the result appears here.
       </p>
     </div>
     <div class="pad">
       <div class="note">
-        Tham số ảnh nhiệt, 0–100. Giá trị hiển thị là thứ camera <b>trả về</b>,
-        không phải thứ vừa gửi.
+        Thermal parameters, 0–100. The values shown are what the camera
+        <b>reports back</b>, not what was just sent.
       </div>
       <div class="sliders" id="c-thermal"></div>
     </div>
   </div>
 
-  <h2>Điều khiển gimbal</h2>
+  <h2>Gimbal control</h2>
   <div id="ctl-off" class="pad note hide">
-    Điều khiển tắt. Chạy lại không có <code>--no-gimbal</code>.
+    Control is off. Restart without <code>--no-gimbal</code>.
   </div>
   <div id="ctl" class="ctl hide">
     <div class="pad">
       <button id="btn-arm" class="armbtn">ARM</button>
       <div id="stick"><div class="cross"></div><div id="knob"></div></div>
       <div class="note" style="text-align:center;margin-top:8px">
-        Kéo · WASD / mũi tên · gamepad
+        Drag · WASD / arrow keys · gamepad
       </div>
       <label class="note" style="display:block;margin-top:12px">
-        Trần tốc độ: <b id="lbl-speed">10.0</b> °/s
+        Speed ceiling: <b id="lbl-speed">10.0</b> °/s
         <input type="range" id="rng-speed" min="1" max="63.5" step="0.5" value="10">
       </label>
     </div>
     <div class="pad">
       <div class="hud">
-        <div><div class="l">Yaw lệnh</div><div class="v" id="v-cy">0.0</div></div>
-        <div><div class="l">Pitch lệnh</div><div class="v" id="v-cp">0.0</div></div>
-        <div><div class="l">Nhịp</div><div class="v" id="v-hz">—</div></div>
+        <div><div class="l">Yaw cmd</div><div class="v" id="v-cy">0.0</div></div>
+        <div><div class="l">Pitch cmd</div><div class="v" id="v-cp">0.0</div></div>
+        <div><div class="l">Rate</div><div class="v" id="v-hz">—</div></div>
       </div>
       <div class="hud">
-        <div><div class="l">Yaw thật</div><div class="v" id="v-ay">—</div></div>
-        <div><div class="l">Pitch thật</div><div class="v" id="v-ap">—</div></div>
+        <div><div class="l">Yaw actual</div><div class="v" id="v-ay">—</div></div>
+        <div><div class="l">Pitch actual</div><div class="v" id="v-ap">—</div></div>
         <div><div class="l">Roll</div><div class="v" id="v-ar">—</div></div>
       </div>
       <dl class="kv">
-        <dt>WebSocket</dt><dd id="v-ws">chưa nối</dd>
+        <dt>WebSocket</dt><dd id="v-ws">not connected</dd>
         <dt>Telemetry</dt><dd id="v-tel">—</dd>
         <dt>Watchdog</dt><dd id="v-wd">—</dd>
-        <dt>Giới hạn mềm</dt><dd id="v-lim">—</dd>
-        <dt>Dừng gần nhất</dt><dd id="v-stop">—</dd>
+        <dt>Soft limit</dt><dd id="v-lim">—</dd>
+        <dt>Last stop</dt><dd id="v-stop">—</dd>
       </dl>
       <div class="warn-strip">
-        Trước khi ARM: kiểm tra không gian quanh gimbal đã trống — dây cáp có thể bị quấn.
-        <kbd>Space</kbd> / <kbd>Esc</kbd> dừng khẩn bất cứ lúc nào.
+        Before arming: check the space around the gimbal is clear — cables can get
+        wound up. <kbd>Space</kbd> / <kbd>Esc</kbd> is an emergency stop at any time.
       </div>
     </div>
   </div>
@@ -256,10 +256,10 @@
 
   <div id="sweep-wrap" class="hide">
     <div id="surprises"></div>
-    <h2>Bản đồ năng lực</h2>
+    <h2>Capability map</h2>
     <div class="scroll"><table>
-      <thead><tr><th>Lệnh</th><th>Gói gửi</th><th>Kết quả</th><th>Data thô</th>
-                 <th>Giải mã</th><th>ms</th><th>Nghĩa là</th></tr></thead>
+      <thead><tr><th>Command</th><th>Frame sent</th><th>Result</th><th>Raw data</th>
+                 <th>Decoded</th><th>ms</th><th>Which means</th></tr></thead>
       <tbody id="sweep"></tbody>
     </table></div>
     <p class="note" id="saved"></p>
@@ -270,6 +270,7 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
 const say = m => $("#status").textContent = m;
 const busy = on => document.querySelectorAll(".bar button:not(.stop)")
   .forEach(b => b.disabled = on);
@@ -284,8 +285,8 @@ async function initVideo() {
   const b = await (await fetch("/api/video")).json();
   if (!b.enabled) {
     $("#views").innerHTML = `<div class="view"><div class="off">
-      Video tắt. Chạy lại với <code>--video synthetic</code> (không cần camera)
-      hoặc <code>--video live</code>.</div></div>`;
+      Video is off. Restart with <code>--video synthetic</code> (no camera needed)
+      or <code>--video live</code>.</div></div>`;
     $("#btn-video").disabled = $("#btn-layout").disabled = $("#sel-cmap").disabled = true;
     return;
   }
@@ -304,9 +305,10 @@ function render(b) {
   $("#views").className = "views " + layout;
   $("#views").innerHTML = streams.map((name, i) => {
     const s = b.streams[name];
+    const label = s.label;
     return `<div class="view ${i > 0 ? "secondary" : "primary"}" data-name="${name}">
-      <img alt="${esc(s.label)}" src="${videoOn ? "/video/" + name + "?t=" + Date.now() : ""}">
-      <div class="cap"><span>${esc(s.label)}</span><span class="m" id="m-${name}"></span></div>
+      <img alt="${esc(label)}" src="${videoOn ? "/video/" + name + "?t=" + Date.now() : ""}">
+      <div class="cap"><span>${esc(label)}</span><span class="m" id="m-${name}"></span></div>
     </div>`;
   }).join("");
 }
@@ -322,21 +324,21 @@ async function poll() {
       el.textContent = `${bus.fps} fps in · ${st.out_fps} out · `
         + `${st.latency_ms} ms · ${st.encode_ms} ms enc · ${st.jpeg_kb} KB`
         + (src.reconnects ? ` · ${src.reconnects} reconnect` : "")
-        + (src.errors ? ` · ${src.errors} lỗi` : "");
+        + (src.errors ? ` · ${src.errors} errors` : "");
     }
-  } catch (e) { /* server tắt — im lặng, lần sau thử lại */ }
+  } catch (e) { /* server is down — stay quiet, try again next tick */ }
 }
 
 $("#btn-video").onclick = async () => {
   videoOn = !videoOn;
   $("#btn-video").classList.toggle("on", videoOn);
   render(await (await fetch("/api/video")).json());
-  say(videoOn ? "Video bật." : "Video tắt — encoder ở server cũng ngủ theo.");
+  say(videoOn ? "Video on." : "Video off — the server encoder sleeps too.");
 };
 
 $("#btn-layout").onclick = async () => {
   layout = layout === "side" ? "pip" : "side";
-  $("#btn-layout").textContent = "Bố cục: " + (layout === "side" ? "cạnh nhau" : "PiP");
+  $("#btn-layout").textContent = "Layout: " + (layout === "side" ? "side by side" : "PiP");
   render(await (await fetch("/api/video")).json());
 };
 
@@ -347,14 +349,14 @@ $("#sel-cmap").onchange = async e => {
     body: JSON.stringify({ colormap: v || null }),
   });
   const b = await r.json();
-  say(b.colormap ? `Tô màu ở server: ${b.colormap}.`
-                 : "Tắt tô màu ở server — để camera tự tô qua lệnh IMG.");
+  say(b.colormap ? `Server-side colormap: ${b.colormap}.`
+                 : "Server colormap off — letting the camera colorize via IMG.");
 };
 
 // ---------------------------------------------------------- diagnostics
 
 async function preflight() {
-  busy(true); say("Đang kiểm tra cáp, IP, cổng, ping, RTSP…");
+  busy(true); say("Checking cable, IP, port, ping, RTSP…");
   try {
     const b = await (await fetch("/api/diagnostics/preflight")).json();
     $("#pre-wrap").classList.remove("hide");
@@ -365,22 +367,22 @@ async function preflight() {
         ${c.fix ? `<div class="f">${esc(c.fix)}</div>` : ""}
       </div>`).join("");
     const bad = b.checks.filter(c => c.status === "fail").length;
-    say(bad ? `${bad} kiểm tra hỏng — sửa theo gợi ý trước khi quét lệnh.`
-            : "Preflight sạch.");
+    say(bad ? `${bad} check(s) failed — fix them before sweeping commands.`
+            : "Preflight clean.");
   } finally { busy(false); }
 }
 
 async function sweep() {
-  busy(true); say("Đang quét… lệnh không hỗ trợ sẽ im lặng và phải chờ hết timeout.");
+  busy(true); say("Sweeping… unsupported commands stay silent for the full timeout.");
   try {
     const b = await (await fetch("/api/diagnostics/sweep?timeout=0.4",
                                  { method: "POST" })).json();
     $("#sweep-wrap").classList.remove("hide");
     $("#sweep").innerHTML = b.probes.map(p => `
       <tr>
-        <td class="mono">${esc(p.name)}${p.surprise ? ' <span class="tag t-warn">bất ngờ</span>' : ""}</td>
+        <td class="mono">${esc(p.name)}${p.surprise ? ' <span class="tag t-warn">surprise</span>' : ""}</td>
         <td class="mono">${esc(p.frame)}</td>
-        <td><span class="tag ${p.alive ? "t-ok" : "t-mute"}">${p.alive ? "trả lời" : "im lặng"}</span></td>
+        <td><span class="tag ${p.alive ? "t-ok" : "t-mute"}">${p.alive ? "answered" : "silent"}</span></td>
         <td class="mono">${p.raw === null ? "—" : esc(p.raw)}</td>
         <td class="mono">${p.value === null ? "—" : esc(fmt(p.value))}</td>
         <td class="num">${p.latency_ms === null ? "—" : p.latency_ms}</td>
@@ -388,23 +390,23 @@ async function sweep() {
       </tr>`).join("");
     const s = b.probes.filter(p => p.surprise);
     $("#surprises").innerHTML = s.length ? `
-      <div class="banner"><b>${s.length} lệnh khác kỳ vọng của tài liệu</b>
+      <div class="banner"><b>${s.length} command(s) differ from the documentation</b>
         ${s.map(p => `<div>· <code>${esc(p.name)}</code> — ${esc(p.note)}</div>`).join("")}
       </div>` : "";
-    $("#saved").textContent = b.saved_to ? "Đã ghi vào " + b.saved_to : "";
-    say(`${b.alive}/${b.total} lệnh trả lời, ${b.silent} im lặng, ${b.surprises} khác kỳ vọng.`);
+    $("#saved").textContent = b.saved_to ? "Written to " + b.saved_to : "";
+    say(`${b.alive}/${b.total} answered, ${b.silent} silent, ${b.surprises} unexpected.`);
   } finally { busy(false); }
 }
 
 async function stop() {
-  // Cắt mọi input đang giữ TRƯỚC khi gửi, nếu không tick sau lại gửi tốc độ tiếp.
+  // Clear every held input BEFORE sending, or the next tick sends speed again.
   keys.clear();
   stickVec = null;
   cmd = { yaw: 0, pitch: 0 };
   drawKnob(0, 0);
   send({ type: "stop" });
   await fetch("/api/stop", { method: "POST" });
-  say("STOP đã gửi — tốc độ 0 ×3 cả hai trục, phiên disarm.");
+  say("STOP sent — zero speed ×3 on both axes, session disarmed.");
 }
 
 const fmt = v => v === null ? "—"
@@ -419,9 +421,10 @@ addEventListener("keydown", e => {
 });
 
 // ----------------------------------------------------------------- camera
-// Mọi lệnh ghi camera đi qua /api/camera/<action>, và endpoint đó KHÔNG trả về
-// "đã gửi" — nó trả về thứ đọc lại được. UI chỉ hiển thị giá trị camera xác
-// nhận, không bao giờ hiển thị giá trị người dùng vừa chọn như thể đã có hiệu lực.
+// Every camera write goes through /api/camera/<action>, and that endpoint does
+// NOT return "sent" — it returns what was read back. The UI only ever shows
+// values the camera confirmed, never the value the user just picked as if it
+// had already taken effect.
 
 let camReady = false, camDrag = null, recording = false;
 const camPending = new Set();
@@ -430,8 +433,8 @@ const fillSelect = (el, names) =>
   el.innerHTML = names.map(n => `<option>${esc(n)}</option>`).join("");
 
 const fval = f => !f ? "—"
-  : f.supported === false ? "không hỗ trợ"
-  : f.value === null ? "chờ…" : fmt(f.value);
+  : f.supported === false ? "unsupported"
+  : f.value === null ? "waiting…" : fmt(f.value);
 
 async function initCamera() {
   const b = await (await fetch("/api/camera")).json();
@@ -441,7 +444,8 @@ async function initCamera() {
   fillSelect($("#c-pal"), b.options.palette);
   fillSelect($("#c-res"), b.options.resolution);
 
-  // Slider dựng từ registry: thêm một tham số nhiệt ở backend là UI có ngay.
+  // Sliders are built from the registry: add a thermal parameter in the backend
+  // and the UI picks it up immediately.
   $("#c-thermal").innerHTML = b.actions
     .filter(a => a.action.startsWith("thermal_"))
     .map(a => `<label data-f="${a.action}">
@@ -454,7 +458,7 @@ async function initCamera() {
     const action = inp.id.slice(3);
     inp.oninput = () => {
       camDrag = action;
-      $("#tv-" + action).textContent = inp.value + " · chưa gửi";
+      $("#tv-" + action).textContent = inp.value + " · not sent";
     };
     inp.onchange = async () => {
       await camApply(action, [parseInt(inp.value, 10)]);
@@ -471,7 +475,7 @@ async function initCamera() {
   $("#c-refresh").onclick = async () => {
     const r = await fetch("/api/camera/refresh?force=true", { method: "POST" });
     renderCamera(await r.json());
-    say("Đã đọc lại toàn bộ trạng thái, kể cả những lệnh đang im lặng.");
+    say("Re-read the whole state, including the commands that were silent.");
   };
 
   camReady = true;
@@ -486,15 +490,15 @@ async function camApply(action, args = []) {
       body: JSON.stringify({ args }),
     });
     const b = await r.json();
-    if (!r.ok) { say(b.detail || "Lệnh bị từ chối."); return null; }
+    if (!r.ok) { say(b.detail || "Command refused."); return null; }
     showApply(b);
     if (b.ok === false)
-      say(`${b.command}: đọc lại vẫn thấy ${fmt(b.actual)} — lệnh chưa có tác dụng.`);
+      say(`${b.command}: read-back still shows ${fmt(b.actual)} — no effect yet.`);
     else if (b.ok === null)
-      say(`${b.command}: không xác nhận được. ${b.note}`);
+      say(`${b.command}: could not be verified. ${b.note}`);
     return b;
   } catch (e) {
-    say("Không gửi được lệnh camera.");
+    say("Could not send the camera command.");
     return null;
   } finally {
     camPending.delete(action);
@@ -502,18 +506,18 @@ async function camApply(action, args = []) {
   }
 }
 
-const KIND = { direct: "đọc lại trực tiếp", relative: "so trước/sau",
-               indirect: "bằng chứng gián tiếp" };
+const KIND = { direct: "direct read-back", relative: "before/after comparison",
+               indirect: "indirect evidence" };
 
 function showApply(b) {
   const cls = b.ok === true ? "t-ok" : b.ok === false ? "t-bad" : "t-warn";
-  const label = b.ok === true ? "xác nhận"
-              : b.ok === false ? "khác kỳ vọng" : "không xác nhận được";
+  const label = b.ok === true ? "confirmed"
+              : b.ok === false ? "mismatch" : "unverified";
   $("#c-last").innerHTML =
     `<span class="tag ${cls}">${label}</span>`
-    + `<code>${esc(b.frame)}</code> → <code>${esc(b.read)}</code> trả `
-    + `<b>${esc(fmt(b.actual))}</b>, kỳ vọng <b>${esc(b.expected)}</b>`
-    + ` · ${KIND[b.kind] || esc(b.kind)} · ${b.attempts} lần đọc · ${b.elapsed_ms} ms`
+    + `<code>${esc(b.frame)}</code> → <code>${esc(b.read)}</code> returned `
+    + `<b>${esc(fmt(b.actual))}</b>, expected <b>${esc(b.expected)}</b>`
+    + ` · ${KIND[b.kind] || esc(b.kind)} · ${b.attempts} read(s) · ${b.elapsed_ms} ms`
     + (b.note ? `<br>${esc(b.note)}` : "");
 }
 
@@ -525,17 +529,17 @@ function renderCamera(b) {
   $("#c-model").textContent = fval(f.model);
   $("#c-ver").textContent = fval(f.version);
   $("#c-zoom").textContent = fval(f.zoom);
-  $("#c-recv").textContent = f.recording.supported === false ? "không hỗ trợ"
-    : recording ? "ĐANG GHI" : "dừng";
+  $("#c-recv").textContent = f.recording.supported === false ? "unsupported"
+    : recording ? "RECORDING" : "stopped";
   const sd = f.sdcard.value;
   $("#c-sd").textContent = !sd ? fval(f.sdcard)
-    : !sd.present ? "chưa cắm thẻ"
-    : `${sd.free_mb} / ${sd.total_mb} MB trống`;
+    : !sd.present ? "no card inserted"
+    : `${sd.free_mb} / ${sd.total_mb} MB free`;
 
-  $("#c-rec").textContent = recording ? "Dừng ghi" : "Ghi hình";
+  $("#c-rec").textContent = recording ? "Stop recording" : "Record";
   $("#c-rec").classList.toggle("on", recording);
 
-  // Không đè lựa chọn người dùng đang mở, và không đè trong lúc lệnh chưa xong.
+  // Never overwrite a select the user has open, nor while a command is in flight.
   syncSelect($("#c-pal"), f.palette, "palette");
   syncSelect($("#c-res"), f.resolution, "resolution");
 
@@ -560,7 +564,7 @@ async function pollCamera() {
   if (!camReady) return;
   try {
     renderCamera(await (await fetch("/api/camera")).json());
-  } catch (e) { /* server tắt — im lặng, lần sau thử lại */ }
+  } catch (e) { /* server is down — stay quiet, try again next tick */ }
 }
 
 // ----------------------------------------------------------- gimbal
@@ -568,13 +572,13 @@ async function pollCamera() {
 function connectWS() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   ws = new WebSocket(`${proto}//${location.host}/ws/control`);
-  ws.onopen = () => $("#v-ws").textContent = "đã nối";
+  ws.onopen = () => $("#v-ws").textContent = "connected";
   ws.onclose = () => {
-    $("#v-ws").textContent = "đứt — gimbal đã được dừng";
+    $("#v-ws").textContent = "dropped — the gimbal was stopped";
     setArmedUI(false);
     setTimeout(connectWS, 1500);
   };
-  ws.onerror = () => $("#v-ws").textContent = "lỗi";
+  ws.onerror = () => $("#v-ws").textContent = "error";
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
     if (m.type === "status") renderStatus(m);
@@ -588,7 +592,7 @@ const send = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
 function setArmedUI(on) {
   armed = on;
   $("#btn-arm").classList.toggle("armed", on);
-  $("#btn-arm").textContent = on ? "ARMED — bấm để DISARM" : "ARM";
+  $("#btn-arm").textContent = on ? "ARMED — click to DISARM" : "ARM";
   if (!on) { keys.clear(); stickVec = null; drawKnob(0, 0); }
 }
 
@@ -596,8 +600,8 @@ function renderStatus(m) {
   $("#v-cy").textContent = m.state.yaw.toFixed(1);
   $("#v-cp").textContent = m.state.pitch.toFixed(1);
   $("#v-hz").textContent = m.tick_hz + " Hz";
-  $("#v-wd").textContent = `${m.watchdog_ms} ms · ${m.stats.watchdog_trips} lần cắt`;
-  $("#v-lim").textContent = `±${m.soft_limit_deg}° · ${m.stats.limit_trips} lần chặn`;
+  $("#v-wd").textContent = `${m.watchdog_ms} ms · ${m.stats.watchdog_trips} trips`;
+  $("#v-lim").textContent = `±${m.soft_limit_deg}° · ${m.stats.limit_trips} blocks`;
   $("#v-stop").textContent = m.stats.last_stop_reason || "—";
   if (m.armed !== armed) setArmedUI(m.armed);
 
@@ -606,13 +610,14 @@ function renderStatus(m) {
     $("#v-ay").textContent = t.attitude.yaw.toFixed(1);
     $("#v-ap").textContent = t.attitude.pitch.toFixed(1);
     $("#v-ar").textContent = t.attitude.roll.toFixed(1);
-    $("#v-tel").textContent = `${t.fresh ? "tươi" : "CŨ"} · ${t.packets} gói · ${t.age_ms} ms`;
+    $("#v-tel").textContent = `${t.fresh ? "fresh" : "STALE"} · ${t.packets} frames · ${t.age_ms} ms`;
   } else {
-    $("#v-tel").textContent = t ? "chờ GAC (camera phải đã ra hình)" : "tắt";
+    $("#v-tel").textContent = t ? "waiting for GAC (camera needs video first)" : "off";
   }
 }
 
-// Trình duyệt KHÔNG tick 20 Hz — chỉ báo khi state đổi. Nhịp ở backend.
+// The browser does NOT tick at 20 Hz — it reports on change. The cadence is in
+// the backend.
 function pushState() {
   const v = currentVector();
   if (v.yaw === cmd.yaw && v.pitch === cmd.pitch) return;
@@ -633,7 +638,7 @@ function currentVector() {
   return { yaw: r1(x * maxSpeed), pitch: r1(y * maxSpeed) };
 }
 
-const r1 = v => Math.round(v * 2) / 2;   // dây chỉ nhận bội của 0.5 °/s
+const r1 = v => Math.round(v * 2) / 2;   // the wire only accepts 0.5 °/s steps
 
 function drawKnob(nx, ny) {
   const c = Math.max(-1, Math.min(1, nx)), d = Math.max(-1, Math.min(1, ny));
@@ -652,8 +657,8 @@ function readGamepad() {
   return null;
 }
 
-// Nhịp tim: giữ phím lâu là lâu không có message state nào, và watchdog 500 ms
-// sẽ cắt oan. Chỉ gửi khi đang thật sự chuyển động.
+// Heartbeat: holding a key means no state message for that whole time, and the
+// 500 ms watchdog would cut in wrongly. Only sent while actually moving.
 function startHeartbeat() {
   if (hbTimer) return;
   hbTimer = setInterval(() => {
@@ -674,7 +679,7 @@ addEventListener("keyup", e => {
   if (keys.delete(k)) pushState();
 });
 
-// Alt-tab giữa lúc đang giữ phím: keyup sẽ KHÔNG BAO GIỜ đến. Kịch bản thật.
+// Alt-tab while holding a key: keyup will NEVER arrive. A real scenario.
 addEventListener("blur", () => { keys.clear(); stickVec = null; pushState(); });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) { keys.clear(); stickVec = null; pushState(); }
@@ -719,7 +724,7 @@ async function initGimbal() {
   startHeartbeat();
 }
 
-initVideo().then(initCamera).then(initGimbal).then(() => say("Sẵn sàng."));
+initVideo().then(initCamera).then(initGimbal).then(() => say("Ready."));
 setInterval(poll, 1000);
 setInterval(pollCamera, 1000);
 </script>
