@@ -1,41 +1,45 @@
-"""Trạng thái camera và lệnh ghi **có xác nhận** — pha 3.
+"""Camera state and **verified** write commands — phase 3.
 
-Quy tắc của pha này chỉ có một câu: *mọi lệnh ghi phải xác nhận được bằng một
-lệnh đọc tương ứng*. Lý do là ràng buộc của chính giao thức — lệnh ghi của C12
-**không có phản hồi**, nên "đã gửi" và "đã có tác dụng" là hai chuyện khác hẳn
-nhau. Gói có thể mất (UDP), firmware có thể không hỗ trợ command word đó, hoặc
-tham số nằm ngoài dải và bị bỏ qua im lặng. Nếu UI chỉ hiển thị thứ *ta vừa gửi*
-thì nó đang nói dối người dùng trong cả ba trường hợp.
+The rule for this phase fits in one sentence: *every write must be confirmable by
+a corresponding read*. The reason is a property of the protocol itself — C12
+write commands have **no reply**, so "sent" and "took effect" are two very
+different things. The packet may be lost (UDP), the firmware may not support that
+command word, or the parameter may be out of range and silently ignored. If the
+UI displays what we *just sent*, it is lying to the operator in all three cases.
 
-Vì vậy :meth:`CameraService.apply` không trả về "đã gửi". Nó trả về **đã đọc lại
-và thấy gì**, ở một trong ba mức:
+So :meth:`CameraService.apply` does not return "sent". It returns **what the
+read-back saw**, at one of three levels:
 
 ``direct``
-    Có lệnh đọc trả đúng giá trị vừa ghi. ``REC``, ``IMG``, ``VID``, nhóm nhiệt.
-    Đây là mức duy nhất chứng minh được lệnh có tác dụng.
+    A read command returns the exact value just written. ``REC``, ``IMG``,
+    ``VID``, and the thermal group. This is the only level that proves the
+    command took effect.
 
 ``relative``
-    Không đặt được giá trị tuyệt đối, chỉ tăng/giảm một nấc — ``DZM``. Xác nhận
-    bằng cách đọc trước, ghi, đọc lại, rồi so *chiều* thay đổi.
+    No absolute setter exists, only step up/down — ``DZM``. Confirmed by reading
+    before, writing, reading again, and comparing the *direction* of the change.
 
 ``indirect``
-    Không có lệnh đọc nào tương ứng — ``CAP`` (chụp ảnh). Bằng chứng gián tiếp
-    duy nhất là dung lượng thẻ giảm. Yếu, và được đánh dấu là yếu.
+    No corresponding read command at all — ``CAP`` (take a photo). The only
+    indirect evidence is the SD card's free space dropping. Weak, and labelled
+    as weak.
 
-Kết quả xác nhận là **ba trạng thái**, không phải hai: ``ok=None`` nghĩa là
-*không xác nhận được* (lệnh đọc im lặng, chưa cắm thẻ). Gộp nó vào "thất bại" sẽ
-làm người dùng đi sửa nhầm chỗ.
+The verification result has **three** states, not two: ``ok=None`` means *could
+not be verified* (the read is silent, no card inserted). Folding that into
+"failed" would send the operator off to fix the wrong thing.
 
-Bộ nhớ đệm trạng thái poll ở nhịp thấp và **tự bỏ những trường im lặng**: trên
-phần cứng thật khá nhiều lệnh đọc sẽ không tồn tại, mà mỗi lần dò một lệnh chết
-là một lần chờ hết timeout. Ba lần im liên tiếp thì giãn ra 30 giây một lần —
-vẫn thử lại, nhưng không làm nghẽn vòng poll.
+The state cache polls at a low rate and **drops fields that stay silent**: on
+real hardware a fair number of read commands will not exist, and every probe of a
+dead command is a full timeout spent waiting. Three consecutive silences and the
+field is backed off to once every 30 seconds — still retried, but no longer
+clogging the poll loop.
 
-Một ngoại lệ quan trọng cho phép suy luận đó: **im lặng lúc gimbal đang quay
-không phải bằng chứng**. Vòng điều khiển 20 Hz chiếm hàng ưu tiên của
-``udp_link``, nên lệnh đọc kẹt tới hết timeout dù firmware hoàn toàn hỗ trợ nó.
-Vòng poll nghỉ trong lúc đó (:func:`CameraService` nhận một predicate ``busy``),
-và im lặng khi bận không được tính vào chuỗi im lặng.
+One important exception to that inference: **silence while the gimbal is turning
+is not evidence**. The 20 Hz control loop owns the priority queue in
+``udp_link``, so a read will sit there until it times out even though the
+firmware supports it perfectly well. The poll loop rests during that time (
+:class:`CameraService` takes a ``busy`` predicate), and silence while busy is not
+counted toward the silent streak.
 """
 
 from __future__ import annotations
@@ -57,30 +61,33 @@ from ..transport.udp_link import UdpLink
 log = logging.getLogger("c12ctl.camera")
 
 POLL_INTERVAL = 1.0
-"""Nhịp vòng poll, giây. Trường nào tới hạn thì đọc, không phải đọc tất cả."""
+"""Poll loop period, in seconds. Whatever is due gets read, not everything."""
 
 READ_TIMEOUT = 0.3
-"""Ngắn hơn mặc định 1 s của registry: một vòng poll chạm nhiều trường, mà lệnh
-không hỗ trợ thì im lặng cho tới hết timeout."""
+"""Shorter than the registry's 1 s default: one poll cycle touches many fields,
+and an unsupported command stays silent for the whole timeout."""
 
 SETTLE = 0.15
-"""Chờ trước khi đọc lại. Camera cần vài chục ms để lệnh có tác dụng thật."""
+"""Wait before reading back. The camera needs tens of milliseconds for a command
+to actually take effect."""
 
 CONFIRM_ATTEMPTS = 3
-"""Số lần đọc lại trước khi kết luận. Gói UDP có thể mất — một lần là không đủ."""
+"""How many read-backs before concluding. UDP packets can be lost — one is not
+enough."""
 
 DEAD_AFTER = 3
-"""Số lần im lặng liên tiếp để coi một trường là không được hỗ trợ."""
+"""Consecutive silences before a field is treated as unsupported."""
 
 DEAD_RETRY = 30.0
-"""Trường đã coi là chết thì bao lâu thử lại một lần."""
+"""How often to retry a field that has been written off as dead."""
 
 SLOW_EVERY = 10.0
-"""Tham số nhiệt gần như không tự đổi — đọc thưa, đỡ tốn lưu lượng."""
+"""Thermal parameters barely ever change on their own — read them rarely to save
+traffic."""
 
 
 # --------------------------------------------------------------------------
-# Xác nhận
+# Verification
 # --------------------------------------------------------------------------
 
 DIRECT = "direct"
@@ -90,31 +97,32 @@ INDIRECT = "indirect"
 
 @dataclass(frozen=True)
 class Expectation:
-    """Điều lệnh đọc phải thấy sau khi ghi."""
+    """What the read command must see after the write."""
 
     describe: str
     matches: Callable[[object], bool]
 
     note: str = ""
-    """Luôn kèm theo kết quả — cách đọc con số này, kể cả khi khớp."""
+    """Always attached to the result — how to read this number, even on a match."""
 
     if_mismatch: str = ""
-    """Chỉ kèm khi **không** khớp: vì sao chưa chắc đã là lệnh trượt."""
+    """Attached only when it does **not** match: why that may not mean the
+    command missed."""
 
 
 @dataclass(frozen=True)
 class Verify:
-    """Cách xác nhận một lệnh ghi bằng một lệnh đọc."""
+    """How to confirm one write command with one read command."""
 
     read: str
-    """Tên lệnh đọc dùng để xác nhận."""
+    """Name of the read command used to confirm."""
 
     kind: str
     expect: Callable[[tuple, object], Expectation]
-    """``(args, giá trị đọc trước khi ghi) → kỳ vọng``."""
+    """``(args, value read before the write) → expectation``."""
 
     needs_before: bool = False
-    """Có phải đọc giá trị cũ trước khi ghi không. Chỉ ``relative``/``indirect``."""
+    """Whether the old value must be read first. Only ``relative``/``indirect``."""
 
     doc: str = ""
 
@@ -148,18 +156,21 @@ def _expect_zoom_in(args: tuple, before: object) -> Expectation:
     return Expectation(
         describe="> %d" % level,
         matches=lambda a: int(a) > level,
-        # Trần zoom thật chưa xác minh (bytecode gợi ý 0–67). Nếu không đổi thì
-        # rất có thể đã chạm trần chứ không phải lệnh trượt — nhưng ta CHƯA biết
-        # trần ở đâu nên không được tự nhận là thành công.
-        if_mismatch="không đổi có thể là đã chạm trần zoom — dải thật chưa xác minh",
+        # The real zoom ceiling is unverified (the bytecode hints at 0–67). If
+        # nothing changed it is quite likely we hit the ceiling rather than the
+        # command missing — but since we do NOT yet know where the ceiling is,
+        # we must not claim success.
+        if_mismatch="no change may mean the zoom ceiling was reached — the real "
+                    "range is still unverified",
     )
 
 
 def _expect_zoom_out(args: tuple, before: object) -> Expectation:
     level = int(before)
     if level <= 0:
-        # Đáy thì biết chắc là 0, khác với trần. Không đổi ở đây là ĐÚNG.
-        return _eq(0, note="đã ở đáy zoom, không đổi là đúng")
+        # The floor is known to be 0, unlike the ceiling. No change here is
+        # CORRECT.
+        return _eq(0, note="already at the zoom floor, so no change is correct")
     return Expectation(describe="< %d" % level, matches=lambda a: int(a) < level)
 
 
@@ -167,54 +178,55 @@ def _expect_snap(args: tuple, before: object) -> Expectation:
     card: SDCardStatus = before
     if not getattr(card, "present", False):
         raise Unverifiable(
-            "thẻ nhớ báo 0/0 — chưa cắm thẻ thì không có bằng chứng nào cho CAP"
+            "the SD card reports 0/0 — with no card inserted there is no "
+            "evidence available for CAP"
         )
     free = card.free_mb
     return Expectation(
         describe="free_mb < %d" % free,
         matches=lambda a: getattr(a, "free_mb", free) < free,
-        note="bằng chứng GIÁN TIẾP: CAP không có lệnh đọc tương ứng, chỉ suy ra "
-             "từ dung lượng thẻ giảm",
-        if_mismatch="ảnh nhỏ hơn đơn vị báo cáo của thẻ có thể không làm free_mb "
-                    "đổi — không khớp ở đây là bằng chứng yếu, chưa phải kết luận",
+        note="INDIRECT evidence: CAP has no corresponding read command, this is "
+             "inferred purely from the card's free space dropping",
+        if_mismatch="a photo smaller than the card's reporting unit may not move "
+                    "free_mb — a mismatch here is weak evidence, not a verdict",
     )
 
 
 class Unverifiable(RuntimeError):
-    """Không thể dựng kỳ vọng: thiếu dữ liệu nền, không phải lệnh sai."""
+    """Cannot build an expectation: missing baseline data, not a bad command."""
 
 
-#: Lệnh ghi camera nào xác nhận được bằng lệnh đọc nào. **Đây là allowlist thứ
-#: hai**: :meth:`CameraService.apply` chỉ chạy lệnh có mặt ở đây, nên một lệnh
-#: ghi không xác nhận được thì không đi qua đường này.
+#: Which camera write is confirmed by which read. **This is a second allowlist**:
+#: :meth:`CameraService.apply` only runs commands listed here, so a write that
+#: cannot be confirmed cannot go through this path.
 WRITES: dict[str, Verify] = {
     "camera.record_start": Verify(
         "read.recording", DIRECT, lambda a, b: _eq(True),
-        doc="REC=01 rồi đọc REC lại phải thấy đang ghi",
+        doc="REC=01, then reading REC back must show recording in progress",
     ),
     "camera.record_stop": Verify(
         "read.recording", DIRECT, lambda a, b: _eq(False),
-        doc="REC=00 rồi đọc REC lại phải thấy đã dừng",
+        doc="REC=00, then reading REC back must show recording stopped",
     ),
     "camera.palette": Verify(
         "read.palette", DIRECT, _expect_palette,
-        doc="IMG là palette — đọc lại IMG phải trả đúng giá trị vừa đặt",
+        doc="IMG is the palette — reading IMG back must return the value just set",
     ),
     "camera.resolution": Verify(
         "read.resolution", DIRECT, _expect_resolution,
-        doc="VID đọc lại phải trả đúng độ phân giải vừa đặt",
+        doc="Reading VID back must return the resolution just set",
     ),
     "camera.zoom_in": Verify(
         "read.zoom", RELATIVE, _expect_zoom_in, needs_before=True,
-        doc="DZM chỉ tăng/giảm một nấc — đọc DZM trước và sau, so chiều",
+        doc="DZM only steps up/down — read DZM before and after, compare direction",
     ),
     "camera.zoom_out": Verify(
         "read.zoom", RELATIVE, _expect_zoom_out, needs_before=True,
-        doc="DZM một nấc xuống; ở đáy (0) thì không đổi là đúng",
+        doc="DZM one step down; at the floor (0) no change is correct",
     ),
     "camera.snap": Verify(
         "read.sdcard", INDIRECT, _expect_snap, needs_before=True,
-        doc="CAP không có lệnh đọc tương ứng — chỉ suy ra từ dung lượng thẻ giảm",
+        doc="CAP has no corresponding read — only inferred from free space dropping",
     ),
 }
 
@@ -222,17 +234,18 @@ for _suffix in ("spatial_nr", "shutter", "detail", "gamma",
                 "brightness", "contrast", "temporal_nr"):
     WRITES["camera.thermal_" + _suffix] = Verify(
         "read.thermal_" + _suffix, DIRECT, _expect_percent,
-        doc="Tham số nhiệt 0–100, đọc lại phải trả đúng giá trị đã clamp",
+        doc="Thermal parameter 0–100; reading back must return the clamped value",
     )
 del _suffix
 
 
 # --------------------------------------------------------------------------
-# Bộ nhớ đệm trạng thái
+# State cache
 # --------------------------------------------------------------------------
 
-#: ``(tên trường, lệnh đọc, chu kỳ giây)``. ``0`` = mỗi vòng poll; ``inf`` = chỉ
-#: đọc một lần, vì model và phiên bản firmware không đổi trong lúc chạy.
+#: ``(field name, read command, period in seconds)``. ``0`` = every poll cycle;
+#: ``inf`` = read once, since the model and firmware version do not change while
+#: running.
 POLL_SPECS: tuple[tuple[str, str, float], ...] = (
     ("model", "read.model", math.inf),
     ("version", "read.version", math.inf),
@@ -254,7 +267,7 @@ POLL_SPECS: tuple[tuple[str, str, float], ...] = (
 
 @dataclass
 class Field:
-    """Một giá trị camera trong bộ nhớ đệm, kèm tuổi và lịch sử im lặng."""
+    """One cached camera value, with its age and its history of silence."""
 
     name: str
     read: str
@@ -267,11 +280,11 @@ class Field:
     replies: int = 0
     silent_streak: int = 0
     dead_after: int = DEAD_AFTER
-    """Ngưỡng của service sở hữu trường này, không phải hằng số module."""
+    """The owning service's threshold, not the module constant."""
 
     @property
     def supported(self) -> bool | None:
-        """``None`` = chưa đủ dữ liệu để kết luận."""
+        """``None`` = not enough data to conclude."""
         if self.replies:
             return True
         return False if self.silent_streak >= self.dead_after else None
@@ -298,7 +311,7 @@ class CameraStats:
     reads: int = 0
     silent: int = 0
     skipped: int = 0
-    """Vòng poll bỏ qua vì link đang bận lưu lượng ưu tiên."""
+    """Poll cycles skipped because the link was busy with priority traffic."""
 
     applies: int = 0
     verified: int = 0
@@ -315,7 +328,7 @@ class CameraStats:
 
 @dataclass
 class ApplyResult:
-    """Kết quả một lệnh ghi *đã đọc lại*."""
+    """The result of a write command *after reading it back*."""
 
     action: str
     command: str
@@ -344,7 +357,7 @@ class ApplyResult:
 
 
 class CameraService:
-    """Đệm trạng thái camera, và chạy lệnh ghi kèm bước đọc lại xác nhận."""
+    """Caches camera state and runs write commands with a read-back step."""
 
     def __init__(
         self,
@@ -359,10 +372,11 @@ class CameraService:
         busy: Callable[[], bool] | None = None,
     ) -> None:
         self.link = link
-        # Gimbal đang quay thì hàng ưu tiên chiếm gần hết khe gửi (20 Hz × 2 gói,
-        # cách nhau tối thiểu 15 ms) và lệnh đọc sẽ kẹt tới hết timeout. Im lặng
-        # lúc đó nói về lưu lượng, KHÔNG nói về việc firmware có hỗ trợ lệnh hay
-        # không — nên vòng poll nghỉ, và im lặng không bị tính là bằng chứng.
+        # While the gimbal is turning, the priority queue takes nearly every send
+        # slot (20 Hz × 2 packets, 15 ms apart) and reads sit until they time
+        # out. Silence then says something about traffic, NOT about whether the
+        # firmware supports the command — so the poll loop rests and that
+        # silence is not counted as evidence.
         self._busy = busy or (lambda: False)
         self.interval = max(0.05, interval)
         self.timeout = timeout
@@ -379,19 +393,19 @@ class CameraService:
         self.last_apply: ApplyResult | None = None
 
         self._task: asyncio.Task | None = None
-        # Hai người cùng chờ một command word thì udp_link chỉ trao gói cho
-        # người đầu tiên — người kia timeout và ghi nhầm một lần "im lặng".
-        # Vòng poll và bước đọc-lại của apply dùng chung khoá này để không bao
-        # giờ chồng nhau.
+        # When two callers wait on the same command word, udp_link hands the
+        # frame to the first one only — the other times out and records a false
+        # "silence". The poll loop and apply's read-back share this lock so they
+        # never overlap.
         self._read_lock = asyncio.Lock()
 
-    # -------------------------------------------------------------- vòng đời
+    # ---------------------------------------------------------------- lifecycle
 
     async def start(self) -> None:
         if self._task is not None:
             return
         self._task = asyncio.create_task(self._poll_loop(), name="camera-poll")
-        log.info("đệm trạng thái camera: poll %.1f Hz, timeout đọc %.0f ms",
+        log.info("camera state cache: poll %.1f Hz, read timeout %.0f ms",
                  1 / self.interval, self.timeout * 1000)
 
     async def close(self) -> None:
@@ -407,17 +421,18 @@ class CameraService:
                 await self.poll_once()
             except asyncio.CancelledError:
                 raise
-            except Exception:  # pragma: no cover - poll hỏng không được giết app
-                log.exception("vòng poll camera lỗi — thử lại ở nhịp sau")
+            except Exception:  # pragma: no cover - a poll failure must not kill the app
+                log.exception("camera poll loop failed — retrying next cycle")
             await asyncio.sleep(self.interval)
 
-    # ------------------------------------------------------------------ đọc
+    # ------------------------------------------------------------------ reading
 
     async def poll_once(self, *, force: bool = False) -> list[Field]:
-        """Đọc những trường tới hạn. ``force`` đọc tất cả, kể cả trường đã chết.
+        """Read whatever is due. ``force`` reads everything, dead fields included.
 
-        Nghỉ hẳn một vòng khi link đang bận lưu lượng ưu tiên — ``force`` (người
-        dùng bấm "Đọc lại") vẫn đi qua, vì đó là yêu cầu tường minh.
+        Rests for a whole cycle while the link is busy with priority traffic —
+        ``force`` (the operator pressing "refresh") still goes through, because
+        that is an explicit request.
         """
         if not force and self._busy():
             self.stats.skipped += 1
@@ -435,18 +450,20 @@ class CameraService:
         return now - f.checked_at >= self._gap(f)
 
     def _gap(self, f: Field) -> float:
-        """Bao lâu nữa mới đọc lại trường này."""
+        """How long before this field is read again."""
         if f.replies == 0 and f.silent_streak >= self.dead_after:
-            # Im lặng liên tục = C12 không hỗ trợ lệnh đọc này. Mỗi lần thử lại
-            # là một lần chờ hết timeout, nên giãn ra thay vì bỏ hẳn.
+            # Continuous silence = the C12 does not support this read. Every
+            # retry costs a full timeout, so space them out instead of dropping
+            # the field entirely.
             return self.dead_retry
         if math.isinf(f.every):
-            # Trường tĩnh: đọc được rồi thì thôi, chưa được thì thử lại đều.
+            # Static field: once it has answered we are done; until then, keep
+            # retrying at the normal cadence.
             return math.inf if f.replies else self.interval
         return f.every
 
     async def _read_field(self, f: Field) -> Field:
-        f.dead_after = self.dead_after      # ngưỡng đổi lúc chạy vẫn phải theo kịp
+        f.dead_after = self.dead_after      # a threshold changed at runtime must apply
         cmd = reg.get(f.read)
         raw: list[str] = []
 
@@ -466,11 +483,11 @@ class CameraService:
         if value is None:
             self.stats.silent += 1
             if self._busy():
-                # Im lặng lúc link bão hoà không nói lên điều gì về firmware.
+                # Silence while the link is saturated says nothing about firmware.
                 return f
             f.silent_streak += 1
             if f.silent_streak == self.dead_after:
-                log.info("%s im lặng %d lần — giãn xuống %.0f s/lần",
+                log.info("%s silent %d times — backing off to once every %.0f s",
                          f.read, f.silent_streak, self.dead_retry)
         else:
             f.value = value
@@ -486,25 +503,25 @@ class CameraService:
                 return f
         return None
 
-    # ------------------------------------------------------------------ ghi
+    # ------------------------------------------------------------------ writing
 
     async def apply(self, action: str, *args) -> ApplyResult:
-        """Gửi một lệnh ghi camera rồi **đọc lại để xác nhận**.
+        """Send a camera write command and then **read it back to confirm**.
 
-        :raises CommandNotAllowed: lệnh không nằm trong :data:`WRITES`. Lệnh ghi
-            không xác nhận được thì không đi qua đường này.
+        :raises CommandNotAllowed: the command is not in :data:`WRITES`. A write
+            that cannot be confirmed does not go through this path.
         """
         name = action if action.startswith("camera.") else "camera." + action
         spec = WRITES.get(name)
         if spec is None:
             raise CommandNotAllowed(
-                "%r không phải lệnh ghi camera xác nhận được. Chỉ những lệnh có "
-                "một lệnh đọc tương ứng mới chạy được ở đây: %s"
+                "%r is not a verifiable camera write. Only commands that have a "
+                "corresponding read can run here: %s"
                 % (action, ", ".join(sorted(WRITES)))
             )
         cmd = reg.get(name)
         read_field = self.field_for(spec.read)
-        if read_field is None:  # pragma: no cover - mọi mục WRITES đều có trong POLL_SPECS
+        if read_field is None:  # pragma: no cover - every WRITES entry is in POLL_SPECS
             read_field = self.fields[spec.read] = Field(
                 name=spec.read, read=spec.read, every=math.inf
             )
@@ -515,8 +532,8 @@ class CameraService:
             f = await self._read_field(read_field)
             before = f.value
 
-        # Dựng kỳ vọng TRƯỚC khi gửi. Tham số sai (palette lạ, thiếu dữ liệu nền)
-        # phải hỏng ở đây, lúc chưa có gói nào rời khỏi backend.
+        # Build the expectation BEFORE sending. A bad parameter (unknown palette,
+        # missing baseline) must fail here, while no packet has left the backend.
         note = ""
         try:
             expectation = spec.expect(tuple(args), before)
@@ -524,7 +541,7 @@ class CameraService:
             expectation = None
             note = str(exc)
         except (KeyError, ValueError, TypeError, IndexError) as exc:
-            raise ValueError("tham số không hợp lệ cho %s: %s" % (name, exc)) from None
+            raise ValueError("invalid parameter for %s: %s" % (name, exc)) from None
 
         frame = self.link.send(cmd, *args)
         self.stats.applies += 1
@@ -537,8 +554,8 @@ class CameraService:
         )
 
         if expectation is None:
-            # Không dựng được kỳ vọng (chưa cắm thẻ). Vẫn đọc lại một lần để
-            # trả về trạng thái tươi, nhưng không kết luận gì.
+            # No expectation could be built (no card inserted). Still read back
+            # once to return fresh state, but conclude nothing.
             replies = read_field.replies
             f = await self._read_field(read_field)
             result.actual = f.value if f.replies > replies else None
@@ -557,22 +574,25 @@ class CameraService:
             self.stats.verified += 1
         elif result.ok is False:
             self.stats.mismatched += 1
-            log.warning("%s: đọc lại thấy %r, kỳ vọng %s",
+            log.warning("%s: read-back saw %r, expected %s",
                         name, result.actual, result.expected)
         else:
             self.stats.unverified += 1
-            log.warning("%s: không xác nhận được — %s", name, result.note or "lệnh đọc im lặng")
+            log.warning("%s: could not verify — %s",
+                        name, result.note or "the read command was silent")
         return result
 
     async def _confirm(self, result: ApplyResult, expectation: Expectation,
                        f: Field) -> None:
-        """Đọc lại tới khi khớp, hoặc hết lượt. Gói UDP mất thì lượt sau bù.
+        """Read back until it matches, or until attempts run out. A lost UDP
+        packet is covered by the next attempt.
 
-        Mốc so sánh là ``f.replies``, **không phải** ``f.value``: đệm cố ý giữ
-        giá trị cũ kèm tuổi khi lệnh đọc im lặng, nên so với ``f.value`` sẽ biến
-        một lần im lặng thành "camera vẫn báo giá trị cũ" — tức là kết luận
-        ``ok=False`` từ số liệu chưa hề được đọc lại. Đúng loại nói dối mà cả cơ
-        chế xác nhận này sinh ra để chặn.
+        The baseline is ``f.replies``, **not** ``f.value``: the cache
+        deliberately keeps the old value with its age when a read goes silent,
+        so comparing against ``f.value`` would turn one silence into "the camera
+        still reports the old value" — an ``ok=False`` verdict drawn from data
+        that was never actually read back. Exactly the kind of lie this whole
+        verification mechanism exists to prevent.
         """
         replies_before = f.replies
         for attempt in range(1, self.attempts + 1):
@@ -589,16 +609,16 @@ class CameraService:
         if f.replies == replies_before:
             result.ok = None
             result.note = result.note or (
-                "%s không phản hồi trong lúc gimbal đang quay — hàng ưu tiên "
-                "chiếm hết khe gửi. Thử lại khi gimbal đứng yên." % f.read
+                "%s did not answer while the gimbal was turning — the priority "
+                "queue owns the send slots. Retry with the gimbal at rest." % f.read
                 if self._busy() else
-                "%s không phản hồi — không có cách nào xác nhận lệnh này trên "
-                "phần cứng hiện tại" % f.read
+                "%s did not answer — there is no way to confirm this command on "
+                "the current hardware" % f.read
             )
         else:
             result.ok = False
 
-    # ------------------------------------------------------------- trạng thái
+    # ------------------------------------------------------------------- state
 
     def as_dict(self) -> dict:
         return {

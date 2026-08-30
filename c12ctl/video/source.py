@@ -1,15 +1,16 @@
-"""Nguồn video: tổng hợp (không cần camera) và bắt thật (RTSP).
+"""Video sources: synthetic (no camera needed) and live capture (RTSP).
 
-Cả hai đứng sau cùng một interface và đẩy vào cùng một :class:`FrameBus`, nên mọi
-tầng phía trên — colormap, MJPEG, số đo — không biết và không cần biết khung đến
-từ đâu. Đó là điều cho phép làm xong toàn bộ pha 2 trước khi có phần cứng.
+Both sit behind the same interface and publish into the same :class:`FrameBus`,
+so every layer above — colormap, MJPEG, metrics — neither knows nor needs to know
+where a frame came from. That is what made it possible to finish all of phase 2
+before any hardware existed.
 
-Về decode H.265: máy dev hiện **thiếu** ``avdec_h265``, ``h265parse``, ``x265enc``
-(chưa cài ``gst-plugins-bad``/``gst-libav``). Nhưng ``cv2`` được build kèm cả
-FFMPEG (libavcodec 58) lẫn GStreamer, nên :class:`CaptureSource` vẫn decode được
-RTSP H.265 qua đường FFMPEG mà không cần cài thêm gì. Trên Rubik Pi 3 thì truyền
-vào một pipeline GStreamer có ``v4l2h265dec`` để dùng decode phần cứng — cùng một
-class, chỉ khác chuỗi URI.
+On H.265 decoding: this dev machine is **missing** ``avdec_h265``, ``h265parse``
+and ``x265enc`` (``gst-plugins-bad``/``gst-libav`` are not installed). But ``cv2``
+is built with both FFMPEG (libavcodec 58) and GStreamer, so :class:`CaptureSource`
+still decodes RTSP H.265 through the FFMPEG path with nothing extra installed. On
+the Rubik Pi 3, pass a GStreamer pipeline containing ``v4l2h265dec`` to get
+hardware decoding — same class, different URI string.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ class SourceStats:
 
 
 class VideoSource:
-    """Nguồn chạy trên thread riêng, đẩy khung vào một :class:`FrameBus`."""
+    """A source running on its own thread, publishing into a :class:`FrameBus`."""
 
     def __init__(self, name: str) -> None:
         self.name = name
@@ -60,7 +61,7 @@ class VideoSource:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
-    # -------------------------------------------------------------- vòng đời
+    # ---------------------------------------------------------------- lifecycle
 
     def start(self, loop=None) -> None:
         if self._thread is not None:
@@ -74,7 +75,7 @@ class VideoSource:
             target=self._run_guarded, name="video-%s" % self.name, daemon=True
         )
         self._thread.start()
-        log.info("nguồn %s: chạy", self.name)
+        log.info("source %s: running", self.name)
 
     def stop(self, timeout: float = 3.0) -> None:
         self._stop.set()
@@ -83,18 +84,18 @@ class VideoSource:
             thread.join(timeout=timeout)
         self.stats.running = False
         self.bus.close()
-        log.info("nguồn %s: dừng sau %d khung", self.name, self.stats.frames)
+        log.info("source %s: stopped after %d frames", self.name, self.stats.frames)
 
     def _run_guarded(self) -> None:
         try:
             self._run()
-        except Exception as exc:  # pragma: no cover - thread không được chết lặng lẽ
-            log.exception("nguồn %s chết: %s", self.name, exc)
+        except Exception as exc:  # pragma: no cover - the thread must not die silently
+            log.exception("source %s died: %s", self.name, exc)
             self.stats.last_error = str(exc)
         finally:
             self.stats.running = False
 
-    def _run(self) -> None:  # pragma: no cover - lớp con cài đặt
+    def _run(self) -> None:  # pragma: no cover - implemented by subclasses
         raise NotImplementedError
 
     def describe(self) -> dict:
@@ -102,19 +103,21 @@ class VideoSource:
 
 
 # --------------------------------------------------------------------------
-# Nguồn tổng hợp
+# Synthetic source
 # --------------------------------------------------------------------------
 
 
 class SyntheticSource(VideoSource):
-    """Sinh khung trong tiến trình — không cần camera, không cần GStreamer.
+    """Generates frames in-process — no camera, no GStreamer needed.
 
-    Nội dung cố ý làm cho **đo được độ trễ bằng mắt**: có đồng hồ, số thứ tự khung,
-    và một vạch quét chạy ngang. So vạch trên trình duyệt với vạch ở nguồn là thấy
-    ngay độ trễ end-to-end mà không cần dụng cụ gì.
+    The content is deliberately built so that **latency can be measured by eye**:
+    it carries a clock, a frame counter, and a sweeping vertical bar. Comparing
+    the bar in the browser against the bar at the source shows the end-to-end
+    latency with no instruments at all.
 
-    :param kind: ``"visible"`` cho ảnh màu 3 kênh, ``"thermal"`` cho ảnh xám 1 kênh
-        — đúng như C12 thật: luồng nhiệt đã bị nén 8-bit, dữ liệu radiometric mất rồi.
+    :param kind: ``"visible"`` for a 3-channel color image, ``"thermal"`` for a
+        1-channel grayscale one — matching the real C12: the thermal stream is
+        already 8-bit compressed, the radiometric data is long gone.
     """
 
     def __init__(self, name: str, width: int, height: int, fps: float,
@@ -129,11 +132,11 @@ class SyntheticSource(VideoSource):
             else self._make_thermal_bg(width, height)
         )
 
-    # ----------------------------------------------------------------- nội dung
+    # ------------------------------------------------------------------ content
 
     @staticmethod
     def _make_bars(w: int, h: int) -> np.ndarray:
-        """Dải màu kiểu SMPTE, tính sẵn một lần."""
+        """SMPTE-style color bars, computed once."""
         colours = [
             (192, 192, 192), (0, 192, 192), (192, 192, 0), (0, 192, 0),
             (192, 0, 192), (0, 0, 192), (192, 0, 0), (32, 32, 32),
@@ -147,7 +150,7 @@ class SyntheticSource(VideoSource):
 
     @staticmethod
     def _make_thermal_bg(w: int, h: int) -> np.ndarray:
-        """Nền xám có gradient nhẹ, để colormap có cái mà tô."""
+        """A gently graded gray background, so the colormap has something to work on."""
         ramp = np.linspace(40, 90, w, dtype=np.float32)[None, :]
         vign = np.linspace(-12, 12, h, dtype=np.float32)[:, None]
         return np.clip(ramp + vign, 0, 255).astype(np.uint8)
@@ -158,7 +161,7 @@ class SyntheticSource(VideoSource):
         phase = (n / max(self.fps, 1)) % 1.0
 
         if self.kind == "thermal":
-            # Vài đốm nóng chuyển động — colormap sẽ làm chúng nổi bật.
+            # A few moving hot spots — the colormap will make them stand out.
             yy, xx = np.mgrid[0:self.height, 0:self.width].astype(np.float32)
             heat = np.zeros((self.height, self.width), np.float32)
             for k, (rx, ry, amp, sigma) in enumerate(
@@ -175,7 +178,7 @@ class SyntheticSource(VideoSource):
         else:
             bar, fg = int(self.width * phase), (255, 255, 255)
 
-        # Vạch quét — mốc để so độ trễ bằng mắt.
+        # The sweep bar — the visual reference for comparing latency.
         cv2.line(img, (bar, 0), (bar, self.height), fg, 2)
 
         scale = max(0.4, self.width / 1600)
@@ -187,7 +190,7 @@ class SyntheticSource(VideoSource):
                     cv2.FONT_HERSHEY_SIMPLEX, scale, fg, max(1, int(2 * scale)))
         return img
 
-    # -------------------------------------------------------------------- chạy
+    # --------------------------------------------------------------------- run
 
     def _run(self) -> None:
         period = 1.0 / self.fps
@@ -202,7 +205,7 @@ class SyntheticSource(VideoSource):
 
             next_at += period
             delay = next_at - time.monotonic()
-            if delay < -period:          # tụt quá xa thì bỏ nhịp, đừng dồn
+            if delay < -period:          # too far behind: skip ahead, do not pile up
                 next_at = time.monotonic()
             elif delay > 0:
                 self._stop.wait(delay)
@@ -214,16 +217,17 @@ class SyntheticSource(VideoSource):
 
 
 # --------------------------------------------------------------------------
-# Nguồn thật
+# Live source
 # --------------------------------------------------------------------------
 
 
 class CaptureSource(VideoSource):
-    """Bắt hình bằng ``cv2.VideoCapture`` — RTSP qua FFMPEG, hoặc pipeline GStreamer.
+    """Capture through ``cv2.VideoCapture`` — RTSP via FFMPEG, or a GStreamer pipeline.
 
-    :param uri: URL RTSP (dùng backend FFMPEG) hoặc chuỗi pipeline GStreamer kết
-        thúc bằng ``appsink``. Tự nhận biết qua sự xuất hiện của ``appsink``.
-    :param grayscale: chuyển sang 1 kênh sau khi decode — hợp với luồng nhiệt.
+    :param uri: an RTSP URL (uses the FFMPEG backend) or a GStreamer pipeline
+        string ending in ``appsink``. Detected by the presence of ``appsink``.
+    :param grayscale: convert to a single channel after decoding — right for the
+        thermal stream.
     """
 
     RECONNECT_DELAY = 2.0
@@ -245,11 +249,11 @@ class CaptureSource(VideoSource):
             cap = cv2.VideoCapture(self.uri, cv2.CAP_GSTREAMER)
         else:
             cap = cv2.VideoCapture(self.uri, cv2.CAP_FFMPEG)
-            # Buffer 1 khung: thiếu dòng này độ trễ tăng dần cho tới khi vô dụng.
-            # Tương đương drop=true max-buffers=1 của appsink.
+            # One-frame buffer: without this, latency grows until it is useless.
+            # The equivalent of appsink's drop=true max-buffers=1.
             try:
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            except cv2.error:  # pragma: no cover - backend không hỗ trợ
+            except cv2.error:  # pragma: no cover - backend does not support it
                 pass
         return cap
 
@@ -262,11 +266,11 @@ class CaptureSource(VideoSource):
                     if cap is not None:
                         cap.release()
                         self.stats.reconnects += 1
-                    log.info("nguồn %s: mở %s", self.name, self.uri)
+                    log.info("source %s: opening %s", self.name, self.uri)
                     cap = self._open()
                     if not cap.isOpened():
                         self.stats.errors += 1
-                        self.stats.last_error = "không mở được nguồn"
+                        self.stats.last_error = "could not open the source"
                         if not self.reconnect:
                             return
                         self._stop.wait(self.RECONNECT_DELAY)
@@ -278,9 +282,9 @@ class CaptureSource(VideoSource):
                 if not ok or image is None:
                     failures += 1
                     self.stats.errors += 1
-                    self.stats.last_error = "read() trả về rỗng"
+                    self.stats.last_error = "read() returned nothing"
                     if failures >= self.MAX_READ_FAILURES:
-                        log.warning("nguồn %s: %d lần đọc hỏng, mở lại",
+                        log.warning("source %s: %d failed reads, reopening",
                                     self.name, failures)
                         cap.release()
                         cap = None
@@ -305,18 +309,18 @@ class CaptureSource(VideoSource):
 
 
 # --------------------------------------------------------------------------
-# Pipeline tham chiếu
+# Reference pipeline
 # --------------------------------------------------------------------------
 
 def gst_pipeline(uri: str, decoder: str = "avdec_h265", latency: int = 200) -> str:
-    """Pipeline GStreamer cho RTSP H.265 → BGR appsink.
+    """GStreamer pipeline for RTSP H.265 → BGR appsink.
 
-    ``drop=true max-buffers=1`` **không phải chi tiết vụn**: thiếu nó appsink tích
-    khung và độ trễ tăng dần cho tới khi không dùng được.
+    ``drop=true max-buffers=1`` is **not a minor detail**: without it the appsink
+    accumulates frames and latency grows until the stream is unusable.
 
-    Decoder chọn qua tham số, không hard-code — cùng một codebase chạy trên máy dev
-    (``avdec_h265``, phần mềm) và trên Rubik Pi 3 / QCS6490 (``v4l2h265dec``, NVDEC
-    tương đương của Qualcomm).
+    The decoder is a parameter rather than hard-coded — the same codebase runs on
+    the dev machine (``avdec_h265``, software) and on the Rubik Pi 3 / QCS6490
+    (``v4l2h265dec``, Qualcomm's hardware decoder).
     """
     return (
         "rtspsrc location=%s latency=%d protocols=tcp "

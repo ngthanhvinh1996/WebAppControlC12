@@ -1,4 +1,4 @@
-"""API pha 0 — trọng tâm là cổng rủi ro cưỡng chế ở server."""
+"""The HTTP API — centred on the risk gate enforced on the server."""
 
 import httpx
 import pytest
@@ -26,7 +26,7 @@ async def client():
 
 
 # --------------------------------------------------------------------------
-# Cổng rủi ro
+# The risk gate
 # --------------------------------------------------------------------------
 
 
@@ -34,14 +34,14 @@ async def test_physical_command_refused_until_armed(client):
     r = await client.post("/api/cmd/gimbal.yaw_speed", json={"args": [20]})
     assert r.status_code == 403
     assert "ARM" in r.json()["detail"]
-    assert client.sim.state.yaw_speed == 0, "gói không được rời khỏi backend"
+    assert client.sim.state.yaw_speed == 0, "no packet may leave the backend"
 
 
 async def test_physical_command_allowed_after_arm(client):
     await client.post("/api/arm")
     r = await client.post("/api/cmd/gimbal.yaw_speed", json={"args": [20]})
     assert r.status_code == 200
-    # 20 °/s → raw 40 = 0x28; checksum của "#TPUG2wGSY28" là 69.
+    # 20 °/s → raw 40 = 0x28; the checksum of "#TPUG2wGSY28" is 69.
     assert r.json()["frame"] == "#TPUG2wGSY2869"
 
 
@@ -69,7 +69,7 @@ async def test_unknown_command_is_404(client):
      "network.set_ip", "gimbal.calibrate", "camera.set_video_config"],
 )
 async def test_dangerous_names_have_no_route(client, name):
-    """Không có endpoint nào cho nhóm 🔴, kể cả đoán đúng tên."""
+    """There is no endpoint for the 🔴 group, not even under the right name."""
     assert (await client.post("/api/cmd/" + name)).status_code == 404
 
 
@@ -81,7 +81,7 @@ async def test_stop_disarms_and_sends_zero(client):
     assert r.json() == {"stopped": True, "armed": False}
     assert (await client.get("/api/health")).json()["armed"] is False
 
-    # Sau STOP, lệnh chuyển động phải bị từ chối lại.
+    # After STOP, motion commands must be refused again.
     assert (await client.post("/api/cmd/gimbal.yaw_speed",
                               json={"args": [20]})).status_code == 403
 
@@ -105,7 +105,7 @@ async def test_disarm_also_stops(client):
 
 
 # --------------------------------------------------------------------------
-# Registry và diagnostics
+# Registry and diagnostics
 # --------------------------------------------------------------------------
 
 
@@ -134,7 +134,7 @@ async def test_diagnostics_sweep_separates_alive_from_silent(client):
 
 
 async def test_diagnostics_sweep_saves_findings(client, tmp_path):
-    """Trang Diagnostics ghi bản đồ năng lực xuống file, không chỉ hiện lên màn hình."""
+    """The Diagnostics page writes the capability map to a file, not just to screen."""
     import json
 
     path = tmp_path / "findings.jsonl"
@@ -193,7 +193,7 @@ async def test_dry_run_sends_nothing_to_the_wire():
 
 @pytest.fixture
 async def vclient():
-    """Client có video tổng hợp bật sẵn."""
+    """A client with synthetic video already running."""
     from c12ctl.video.manager import VideoManager
 
     sim = C12Simulator(seed=5)
@@ -237,17 +237,17 @@ async def test_snapshot_geometry_matches_spec(vclient):
 
     r = await vclient.get("/video/thermal/snapshot.jpg")
     frame = cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_COLOR)
-    assert frame.shape[:2] == (576, 768), "nhiệt 384×288 phóng ×2"
+    assert frame.shape[:2] == (576, 768), "thermal 384×288 upscaled ×2"
 
 
 @pytest.fixture
 async def live_url(vclient):
-    """Server uvicorn thật trên cổng ngẫu nhiên.
+    """A real uvicorn server on a random port.
 
-    KHÔNG dùng ASGITransport cho endpoint streaming: nó await ASGI app tới khi
-    HOÀN TẤT rồi mới gom body, nên một luồng MJPEG vô hạn sẽ treo vĩnh viễn —
-    giới hạn của httpx, không phải lỗi của endpoint. Luồng video phải test qua
-    socket thật.
+    Do NOT use ASGITransport for streaming endpoints: it awaits the ASGI app to
+    COMPLETION before collecting the body, so an infinite MJPEG stream hangs
+    forever — an httpx limitation, not an endpoint bug. Video streams have to be
+    tested through a real socket.
     """
     import asyncio
 
@@ -261,7 +261,7 @@ async def live_url(vclient):
         if server.started:
             break
         await asyncio.sleep(0.01)
-    assert server.started, "uvicorn không khởi động"
+    assert server.started, "uvicorn did not start"
     port = server.servers[0].sockets[0].getsockname()[1]
     yield "http://127.0.0.1:%d" % port
     server.should_exit = True
@@ -287,7 +287,7 @@ async def test_mjpeg_stream_emits_multipart(live_url):
 
 
 async def test_mjpeg_encoder_sleeps_after_client_leaves(live_url, vclient):
-    """Đóng kết nối giữa chừng: encoder ở server phải ngủ, không chạy mãi."""
+    """Disconnecting mid-stream: the server encoder must sleep, not run forever."""
     import asyncio
 
     from c12ctl.video.mjpeg import BOUNDARY
@@ -305,11 +305,11 @@ async def test_mjpeg_encoder_sleeps_after_client_leaves(live_url, vclient):
         if stream.stats.clients == 0:
             break
     assert stream.stats.clients == 0
-    assert stream._encoder is None, "encoder phải ngủ khi không còn ai xem"
+    assert stream._encoder is None, "the encoder must sleep when nobody is watching"
 
 
 async def test_two_clients_share_one_encode(live_url, vclient):
-    """Hai kết nối HTTP thật, một lần encode mỗi khung."""
+    """Two real HTTP connections, one encode per frame."""
     import asyncio
 
     from c12ctl.video.mjpeg import BOUNDARY
@@ -351,21 +351,22 @@ async def test_bad_colormap_rejected_with_options(vclient):
 
 
 async def test_video_routes_503_when_disabled(client):
-    """App chạy được không cần video — pha 1 vẫn dùng được như cũ."""
+    """The app runs without video — phase 1 still works as before."""
     assert (await client.get("/api/video")).json()["enabled"] is False
     assert (await client.get("/video/visible/snapshot.jpg")).status_code == 503
 
 
 # --------------------------------------------------------------------------
-# Điều khiển gimbal qua WebSocket (pha 5)
+# Gimbal control over WebSocket (phase 5)
 # --------------------------------------------------------------------------
 
 
 @pytest.fixture
 async def gclient():
-    """App có vòng điều khiển gimbal + telemetry, chạy trên server thật.
+    """The app with the gimbal control loop and telemetry, on a real server.
 
-    WebSocket cũng như MJPEG: ASGITransport không mô phỏng được, phải qua socket.
+    WebSockets are like MJPEG here: ASGITransport cannot emulate them, so this
+    has to go through a socket.
     """
     import asyncio
 
@@ -448,7 +449,7 @@ async def test_ws_arm_then_move(gclient):
 
 
 async def test_ws_close_stops_a_moving_gimbal(gclient):
-    """Điều kiện qua pha 5: đóng tab giữa lúc gimbal đang quay → phải dừng."""
+    """Phase 5 exit criterion: close the tab mid-motion → it must stop."""
     import asyncio
     import json
 
@@ -474,7 +475,7 @@ async def test_ws_close_stops_a_moving_gimbal(gclient):
 
 
 async def test_ws_silence_trips_watchdog(gclient):
-    """Kết nối còn đó nhưng client câm — watchdog vẫn phải cắt."""
+    """The connection is up but the client is mute — the watchdog must still cut in."""
     import asyncio
     import json
 
@@ -484,7 +485,7 @@ async def test_ws_silence_trips_watchdog(gclient):
         await asyncio.sleep(0.1)
         assert gclient.sim.state.yaw_speed != 0
 
-        await asyncio.sleep(0.6)                    # im lặng, không ping
+        await asyncio.sleep(0.6)                    # silence, no ping
         assert gclient.ctrl.stats.watchdog_trips >= 1
         assert gclient.sim.state.yaw_speed == 0
 
@@ -550,14 +551,14 @@ async def test_gimbal_status_endpoint(gclient):
 
 
 async def test_gimbal_routes_503_when_disabled(client):
-    """App vẫn chạy được không có gimbal — pha 1–2 dùng như cũ."""
+    """The app still runs without a gimbal — phases 1–2 work as before."""
     assert (await client.get("/api/gimbal")).json()["enabled"] is False
     assert (await client.post("/api/gimbal/max-speed",
                               json={"max_speed": 5})).status_code == 503
 
 
 # --------------------------------------------------------------------------
-# Camera (pha 3) — API trả về thứ ĐỌC LẠI ĐƯỢC, không phải thứ vừa gửi
+# Camera (phase 3) — the API returns what was READ BACK, not what was sent
 # --------------------------------------------------------------------------
 
 
@@ -610,11 +611,11 @@ async def test_camera_apply_unknown_action_is_404(cclient):
 async def test_camera_apply_bad_argument_is_400(cclient):
     r = await cclient.post("/api/camera/palette", json={"args": ["NEON"]})
     assert r.status_code == 400
-    assert cclient.sim.state.palette == "01", "không gói nào được rời backend"
+    assert cclient.sim.state.palette == "01", "no packet may leave the backend"
 
 
 async def test_camera_routes_503_when_disabled(client):
-    """App chạy được không cần đệm camera — pha 1–2 dùng như cũ."""
+    """The app runs without the camera cache — phases 1–2 work as before."""
     assert (await client.get("/api/camera")).json()["enabled"] is False
     assert (await client.post("/api/camera/refresh")).status_code == 503
     assert (await client.post("/api/camera/snap")).status_code == 503

@@ -1,7 +1,7 @@
-"""Vòng điều khiển gimbal — bộ test quan trọng nhất về an toàn của cả dự án.
+"""The gimbal control loop — the project's most safety-critical test module.
 
-Trọng tâm không phải "gimbal có quay không" mà là "gimbal có **dừng** không", ở
-mọi ngả hỏng hóc nghĩ ra được.
+The focus is not "does the gimbal move" but "does the gimbal **stop**", down
+every failure path we could think of.
 """
 
 import asyncio
@@ -25,7 +25,7 @@ FAST_WATCHDOG = 0.15
 
 @pytest.fixture
 async def rig():
-    """Simulator + link + controller, nhịp nhanh để test không lê thê."""
+    """Simulator + link + controller, fast cadence so the tests do not drag."""
     sim = C12Simulator(seed=11)
     await sim.start("127.0.0.1", 0)
     link = UdpLink("127.0.0.1", sim.port, local_port=0, min_tx_gap=0.001)
@@ -41,7 +41,7 @@ async def rig():
 
 
 async def drive(ctrl, yaw=20.0, pitch=0.0, seconds=0.3):
-    """Giữ tốc độ có nhịp tim, đúng như trình duyệt sẽ làm."""
+    """Hold a speed with heartbeats, exactly as the browser does."""
     ctrl.set_speed(yaw, pitch)
     deadline = asyncio.get_running_loop().time() + seconds
     while asyncio.get_running_loop().time() < deadline:
@@ -50,15 +50,15 @@ async def drive(ctrl, yaw=20.0, pitch=0.0, seconds=0.3):
 
 
 # --------------------------------------------------------------------------
-# Cổng ARM
+# The ARM gate
 # --------------------------------------------------------------------------
 
 
 async def test_speed_rejected_before_arm(rig):
-    with pytest.raises(NotArmed, match="chưa ARM"):
+    with pytest.raises(NotArmed, match="not armed"):
         rig.set_speed(20, 0)
     await asyncio.sleep(0.1)
-    assert rig.sim.state.yaw_speed == 0, "gói không được rời khỏi backend"
+    assert rig.sim.state.yaw_speed == 0, "no packet may leave the backend"
     assert rig.stats.rejected == 1
 
 
@@ -70,7 +70,7 @@ async def test_speed_accepted_after_arm(rig):
 
 
 async def test_arm_starts_from_zero_state(rig):
-    """ARM không được kế thừa tốc độ cũ còn sót lại."""
+    """ARM must not inherit a leftover speed."""
     rig.arm()
     rig.set_speed(25, 25)
     rig.stop_all("test")
@@ -79,31 +79,31 @@ async def test_arm_starts_from_zero_state(rig):
 
 
 # --------------------------------------------------------------------------
-# Năm ngả dừng khẩn
+# The five emergency-stop paths
 # --------------------------------------------------------------------------
 
 
 async def test_stop_zeroes_a_moving_gimbal(rig):
-    """Ngả 1 & 2: nút STOP / phím Space-Esc."""
+    """Paths 1 & 2: the STOP button / the Space-Esc keys."""
     rig.arm()
     await drive(rig, 25, 0, 0.2)
     assert rig.sim.state.yaw_speed != 0
 
-    rig.stop_all("nút STOP")
+    rig.stop_all("STOP button")
     await asyncio.sleep(0.15)
     assert rig.sim.state.yaw_speed == 0
     assert rig.sim.state.pitch_speed == 0
-    assert not rig.armed, "STOP phải disarm luôn"
+    assert not rig.armed, "STOP must disarm as well"
 
 
 async def test_watchdog_stops_when_updates_dry_up(rig):
-    """Ngả 4: không nhận cập nhật nào trong 500 ms (ở đây rút ngắn để test)."""
+    """Path 4: no update within 500 ms (shortened here for the test)."""
     rig.arm()
     rig.set_speed(25, 0)
     await asyncio.sleep(0.08)
     assert rig.sim.state.yaw_speed != 0
 
-    await asyncio.sleep(FAST_WATCHDOG + 0.15)      # im lặng, không heartbeat
+    await asyncio.sleep(FAST_WATCHDOG + 0.15)      # silence, no heartbeat
     assert rig.stats.watchdog_trips >= 1
     assert rig.sim.state.yaw_speed == 0
     assert not rig.armed
@@ -111,7 +111,7 @@ async def test_watchdog_stops_when_updates_dry_up(rig):
 
 
 async def test_heartbeat_prevents_watchdog_trip(rig):
-    """Giữ phím lâu không được bị watchdog cắt oan — đó là vai trò của nhịp tim."""
+    """Holding a key must not trip the watchdog — that is what the heartbeat is for."""
     rig.arm()
     await drive(rig, 25, 0, FAST_WATCHDOG * 4)
     assert rig.stats.watchdog_trips == 0
@@ -120,7 +120,7 @@ async def test_heartbeat_prevents_watchdog_trip(rig):
 
 
 async def test_close_stops_gimbal(rig):
-    """Ngả 5: tiến trình thoát."""
+    """Path 5: process exit."""
     rig.arm()
     await drive(rig, 25, 0, 0.15)
     assert rig.sim.state.yaw_speed != 0
@@ -131,25 +131,25 @@ async def test_close_stops_gimbal(rig):
 
 
 async def test_loop_error_triggers_stop(rig):
-    """Ngả 5: exception thoát ra khỏi vòng cũng phải dừng gimbal."""
+    """Path 5: an exception escaping the loop must stop the gimbal too."""
     rig.arm()
     await drive(rig, 25, 0, 0.1)
 
     def boom():
-        raise RuntimeError("hỏng giả lập")
+        raise RuntimeError("simulated failure")
 
     rig._apply_soft_limits = lambda y, p: boom()
     await asyncio.sleep(0.2)
 
     assert rig.stats.stops >= 1
-    assert "lỗi vòng điều khiển" in rig.stats.last_stop_reason
+    assert "control loop error" in rig.stats.last_stop_reason
     assert not rig.armed
     await asyncio.sleep(0.1)
     assert rig.sim.state.yaw_speed == 0
 
 
 async def test_stop_sends_zero_more_than_once(rig):
-    """Gói UDP có thể mất — một gói 0 là không đủ."""
+    """UDP packets can be lost — a single zero packet is not enough."""
     sent = []
     rig.link.subscribe(lambda f: None)
     original = rig.link.send_frame
@@ -165,23 +165,23 @@ async def test_stop_sends_zero_more_than_once(rig):
 async def test_stop_is_safe_to_call_repeatedly(rig):
     rig.arm()
     for _ in range(5):
-        rig.stop_all("lặp")
+        rig.stop_all("repeated")
     assert not rig.armed
     assert rig.sim.state.yaw_speed == 0
 
 
 async def test_stop_survives_broken_link(rig):
-    """stop_all phải chạy được cả khi link đã hỏng — nó bị gọi từ finally."""
+    """stop_all must work even with a broken link — it is called from finally."""
     def broken(*a, **k):
-        raise OSError("socket đã đóng")
+        raise OSError("socket is closed")
 
     rig.link.send_frame = broken
-    rig.stop_all("link hỏng")          # không được ném
+    rig.stop_all("broken link")        # must not raise
     assert not rig.armed
 
 
 # --------------------------------------------------------------------------
-# Nhịp và keepalive
+# Cadence and keepalive
 # --------------------------------------------------------------------------
 
 
@@ -196,10 +196,11 @@ async def test_loop_refreshes_at_target_rate(rig):
 
 @pytest.mark.parametrize("hold_speed", [False, True])
 async def test_keepalive_correct_under_both_gimbal_behaviours(hold_speed):
-    """Mâu thuẫn duy nhất không phân xử được từ tài liệu.
+    """The one disagreement the documents cannot settle.
 
-    protocol.md nói gimbal tự dừng sau vài chục ms; bytecode nói nó giữ lệnh tới
-    khi có lệnh mới. Vòng 20 Hz phải đúng ở CẢ HAI — đó là lý do chọn keepalive.
+    protocol.md says the gimbal stops itself after a few tens of ms; the bytecode
+    says it holds the command until a new one arrives. The 20 Hz loop must be
+    correct under BOTH — which is why we keepalive.
     """
     sim = C12Simulator(hold_speed=hold_speed, seed=3)
     await sim.start("127.0.0.1", 0)
@@ -211,11 +212,11 @@ async def test_keepalive_correct_under_both_gimbal_behaviours(hold_speed):
     try:
         ctrl.arm()
         await drive(ctrl, 25, 0, 0.4)
-        assert sim.state.yaw > 1, "hold_speed=%s: gimbal phải quay" % hold_speed
+        assert sim.state.yaw > 1, "hold_speed=%s: the gimbal must turn" % hold_speed
 
         ctrl.stop_all("test")
         await asyncio.sleep(0.15)
-        assert sim.state.yaw_speed == 0, "hold_speed=%s: phải dừng" % hold_speed
+        assert sim.state.yaw_speed == 0, "hold_speed=%s: it must stop" % hold_speed
     finally:
         await ctrl.close()
         await link.close()
@@ -223,7 +224,7 @@ async def test_keepalive_correct_under_both_gimbal_behaviours(hold_speed):
 
 
 async def test_idle_does_not_spam_packets(rig):
-    """Đứng yên thì im — gửi vài gói 0 rồi thôi, không bắn 20 Hz mãi."""
+    """Standing still means quiet — a few zero packets, then nothing, not 20 Hz forever."""
     rig.arm()
     await asyncio.sleep(0.05)
     before = rig.stats.packets
@@ -234,7 +235,7 @@ async def test_idle_does_not_spam_packets(rig):
 
 
 async def test_zero_is_sent_after_release(rig):
-    """Nhả phím: phải có gói 0 thật sự đi ra, không chỉ ngừng gửi."""
+    """Key released: a real zero packet must go out, not merely a stop in sending."""
     rig.arm()
     await drive(rig, 25, 0, 0.15)
     rig.set_speed(0, 0)
@@ -255,7 +256,7 @@ async def test_gsm_mode_halves_packet_count():
         before = ctrl.stats.packets
         await drive(ctrl, 20, 10, 0.3)
         ticks = 0.3 / FAST_TICK
-        assert ctrl.stats.packets - before <= ticks * 1.5, "GSM phải là 1 gói/tick"
+        assert ctrl.stats.packets - before <= ticks * 1.5, "GSM must be 1 packet per tick"
         assert sim.state.yaw_speed != 0 and sim.state.pitch_speed != 0
     finally:
         await ctrl.close()
@@ -264,7 +265,7 @@ async def test_gsm_mode_halves_packet_count():
 
 
 async def test_gsm_on_old_firmware_leaves_gimbal_still():
-    """Firmware < 0.5 bỏ qua GSM. Đây là lý do mặc định KHÔNG bật GSM."""
+    """Firmware < 0.5 ignores GSM. This is why GSM is NOT on by default."""
     sim = C12Simulator(supports_gsm=False, seed=4)
     await sim.start("127.0.0.1", 0)
     link = UdpLink("127.0.0.1", sim.port, local_port=0, min_tx_gap=0.001)
@@ -283,7 +284,7 @@ async def test_gsm_on_old_firmware_leaves_gimbal_still():
 
 
 # --------------------------------------------------------------------------
-# Giới hạn tốc độ
+# Speed limits
 # --------------------------------------------------------------------------
 
 
@@ -307,17 +308,17 @@ async def test_lowering_max_speed_reclamps_current_state(rig):
 async def test_default_max_speed_is_conservative():
     from c12ctl.services.gimbal import DEFAULT_MAX_SPEED
 
-    assert DEFAULT_MAX_SPEED == 10.0, "lần chạy đầu phải chậm có chủ ý"
+    assert DEFAULT_MAX_SPEED == 10.0, "the first run must be deliberately slow"
 
 
 async def test_speed_is_quantised_to_wire_resolution(rig):
-    """Tốc độ trên dây là bội của 0.5 °/s — UI không nên hứa hẹn hơn thế."""
+    """Wire speed comes in 0.5 °/s steps — the UI should not promise more."""
     rig.arm()
     assert rig.set_speed(3.7, 0).yaw == 3.5
 
 
 # --------------------------------------------------------------------------
-# Giới hạn mềm từ telemetry
+# Soft limits driven by telemetry
 # --------------------------------------------------------------------------
 
 
@@ -355,17 +356,17 @@ async def test_soft_limit_blocks_motion_past_the_edge(rig_tel):
         await asyncio.sleep(0.02)
         if rig_tel.tel.fresh:
             break
-    rig_tel.sim.state.yaw = 60.0            # đã vượt soft limit 45°
+    rig_tel.sim.state.yaw = 60.0            # already past the 45° soft limit
     await asyncio.sleep(0.1)
 
     rig_tel.arm()
-    await drive(rig_tel, 25, 0, 0.2)        # đẩy tiếp về phía dương
+    await drive(rig_tel, 25, 0, 0.2)        # keep pushing in the positive direction
     assert rig_tel.stats.limit_trips >= 1
     assert rig_tel.sim.state.yaw_speed == 0
 
 
 async def test_soft_limit_still_allows_retreat(rig_tel):
-    """Chạm biên vẫn phải quay ngược ra được — nếu không thì kẹt cứng."""
+    """Reaching the edge must still allow retreating — otherwise it is stuck."""
     for _ in range(60):
         await asyncio.sleep(0.02)
         if rig_tel.tel.fresh:
@@ -374,12 +375,12 @@ async def test_soft_limit_still_allows_retreat(rig_tel):
     await asyncio.sleep(0.1)
 
     rig_tel.arm()
-    await drive(rig_tel, -25, 0, 0.2)       # đi ngược lại
+    await drive(rig_tel, -25, 0, 0.2)       # drive back the other way
     assert rig_tel.sim.state.yaw_speed < 0
 
 
 async def test_stale_telemetry_does_not_gate_motion(rig_tel):
-    """Tư thế quá hạn thì KHÔNG chặn — an toàn giả còn nguy hơn không chặn."""
+    """A stale attitude must NOT gate — false safety is worse than no gating."""
     for _ in range(60):
         await asyncio.sleep(0.02)
         if rig_tel.tel.fresh:
@@ -387,8 +388,9 @@ async def test_stale_telemetry_does_not_gate_motion(rig_tel):
     rig_tel.sim.state.yaw = 60.0
     await asyncio.sleep(0.1)
 
-    # Làm telemetry CHẾT THẬT: dừng vòng gửi lại GAA và tắt push ở camera.
-    # Chỉ vặn updated_at là vô ích — gói GAC kế tiếp sẽ làm mới nó ngay.
+    # Kill telemetry FOR REAL: stop the GAA re-arm loop and turn the push off
+    # at the camera. Just tampering with updated_at is useless — the next GAC
+    # frame would refresh it immediately.
     rig_tel.tel._arm_task.cancel()
     rig_tel.sim.state.gaa_rate = 0
     for _ in range(60):
@@ -404,7 +406,7 @@ async def test_stale_telemetry_does_not_gate_motion(rig_tel):
 
 
 async def test_no_telemetry_means_no_soft_limits(rig):
-    """Không có telemetry vẫn điều khiển được, chỉ là mất lớp bảo vệ."""
+    """Control still works without telemetry; only the protective layer is lost."""
     assert rig.telemetry is None
     rig.arm()
     await drive(rig, 25, 0, 0.15)
@@ -413,7 +415,7 @@ async def test_no_telemetry_means_no_soft_limits(rig):
 
 
 # --------------------------------------------------------------------------
-# Báo cáo trạng thái
+# State reporting
 # --------------------------------------------------------------------------
 
 

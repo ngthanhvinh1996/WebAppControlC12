@@ -1,15 +1,17 @@
-"""Kênh UDP tới C12: một socket, một writer, RX demux theo command word.
+"""UDP channel to the C12: one socket, one writer, RX demultiplexed by command word.
 
-Camera là thiết bị nhúng nhỏ; bắn song song nhiều lệnh dễ làm nó bỏ gói. Mọi lệnh
-xếp hàng qua **một** task ghi duy nhất với khoảng cách tối thiểu giữa hai gói.
+The camera is a small embedded device; firing commands in parallel makes it drop
+packets. Every command is queued through a **single** writer task with a minimum
+gap between packets.
 
-Task đọc tách gói, đối chiếu ``CMD3`` rồi phân phối về hai hướng:
+The reader task splits frames, matches on ``CMD3`` and dispatches two ways:
 
-* :class:`asyncio.Future` đang chờ — lệnh đọc,
-* bus telemetry — gói ``GAC`` camera tự đẩy.
+* a waiting :class:`asyncio.Future` — read commands,
+* the telemetry bus — ``GAC`` frames the camera pushes on its own.
 
-Lệnh chuyển động gimbal đi **hàng ưu tiên**, không xếp sau lệnh đọc: ở nhịp 20 Hz
-một gói tốc độ bị kẹt sau một lệnh đọc đang timeout là gimbal giật.
+Gimbal motion commands use the **priority queue** so they never queue behind a
+read: at 20 Hz, one speed packet stuck behind a read that is timing out is a
+visible stutter in the gimbal.
 """
 
 from __future__ import annotations
@@ -34,11 +36,11 @@ DEFAULT_PORT = 5000
 DEFAULT_LOCAL_PORT = 5000
 
 MIN_TX_GAP = 0.015
-"""Khoảng cách tối thiểu giữa hai gói, giây."""
+"""Minimum gap between two packets, in seconds."""
 
 
 class PortBusyError(RuntimeError):
-    """Không bind được cổng local. Lỗi vận hành số một của hệ này."""
+    """Could not bind the local port. The number one operational failure here."""
 
 
 @dataclass
@@ -67,13 +69,14 @@ class _Protocol(asyncio.DatagramProtocol):
         self._link._on_datagram(data, addr)
 
     def error_received(self, exc: Exception) -> None:  # noqa: D102
-        log.warning("lỗi socket UDP: %s", exc)
+        log.warning("UDP socket error: %s", exc)
 
 
 class UdpLink:
-    """Kênh lệnh tới camera.
+    """Command channel to the camera.
 
-    :param dry_run: in gói ra log thay vì gửi. Không mở socket, không cần phần cứng.
+    :param dry_run: log packets instead of sending them. Opens no socket and
+        needs no hardware.
     """
 
     def __init__(
@@ -107,7 +110,7 @@ class UdpLink:
             path.parent.mkdir(parents=True, exist_ok=True)
             self._log_file = path.open("a", encoding="utf-8")
 
-    # ---------------------------------------------------------------- vòng đời
+    # ---------------------------------------------------------------- lifecycle
 
     async def start(self) -> None:
         if not self.dry_run:
@@ -120,15 +123,15 @@ class UdpLink:
                 )
             except OSError as exc:
                 raise PortBusyError(
-                    "Không bind được cổng UDP %d: %s.\n"
-                    "Cổng này hay bị app trợ lý hoặc ground station chiếm — "
-                    "tắt chúng rồi thử lại, hoặc chạy với --local-port 0."
+                    "Could not bind UDP port %d: %s.\n"
+                    "This port is often taken by a companion app or a ground "
+                    "station — close those and retry, or run with --local-port 0."
                     % (self.local_port, exc)
                 ) from exc
         self._writer_task = asyncio.create_task(self._writer(), name="c12-tx")
         log.info(
-            "kênh UDP %s → %s:%d%s",
-            "DRY-RUN" if self.dry_run else "mở",
+            "UDP channel %s → %s:%d%s",
+            "DRY-RUN" if self.dry_run else "open",
             self.addr[0],
             self.addr[1],
             "" if self.dry_run else " (local :%d)" % self.local_port,
@@ -159,14 +162,14 @@ class UdpLink:
     async def __aexit__(self, *exc) -> None:
         await self.close()
 
-    # ------------------------------------------------------------------- gửi
+    # --------------------------------------------------------------- sending
 
     def send_frame(self, frame: str, *, priority: bool = False) -> None:
-        """Xếp một khung đã dựng sẵn vào hàng đợi. Không chờ."""
+        """Queue a prebuilt frame. Does not wait."""
         (self._priority if priority else self._normal).put_nowait(frame)
 
     def send(self, command: Command | str, *args, priority: bool = False, **kwargs) -> str:
-        """Xếp một lệnh của registry. Trả về khung đã dựng."""
+        """Queue a registry command. Returns the frame that was built."""
         cmd = self._resolve(command)
         frame = cmd.frame(*args, **kwargs)
         self.send_frame(frame, priority=priority)
@@ -175,15 +178,17 @@ class UdpLink:
     async def request(
         self, command: Command | str, *args, timeout: float | None = None, **kwargs
     ):
-        """Gửi một lệnh đọc rồi chờ phản hồi.
+        """Send a read command and wait for the reply.
 
-        Trả về giá trị đã giải mã nếu lệnh có ``decode``, ngược lại trả chuỗi data
-        thô. Trả ``None`` khi timeout — lệnh camera không hỗ trợ sẽ **im lặng**,
-        và im lặng chính là câu trả lời mà pha 1 cần ghi lại.
+        Returns the decoded value if the command has a ``decode``, otherwise the
+        raw data string. Returns ``None`` on timeout — a command the camera does
+        not support stays **silent**, and that silence is exactly the answer
+        phase 1 needs to record.
 
-        :param timeout: ghi đè timeout khai báo trong registry. Trang Diagnostics
-            quét hàng chục lệnh và phần lớn sẽ im lặng, nên nó cần rút ngắn
-            khoảng chờ thay vì cộng dồn ``len(COMMANDS) × 1 s``.
+        :param timeout: overrides the timeout declared in the registry. The
+            Diagnostics page probes dozens of commands, most of which will be
+            silent, so it needs to shorten the wait instead of accumulating
+            ``len(COMMANDS) × 1 s``.
         """
         cmd = self._resolve(command)
         loop = asyncio.get_running_loop()
@@ -206,26 +211,26 @@ class UdpLink:
         if cmd.decode is not None:
             try:
                 return cmd.decode(frame.data)
-            except Exception:  # pragma: no cover - dữ liệu lạ từ phần cứng
-                log.warning("không giải mã được %s data=%r", cmd.cmd3, frame.data)
+            except Exception:  # pragma: no cover - odd data from hardware
+                log.warning("could not decode %s data=%r", cmd.cmd3, frame.data)
                 return frame.data
         return frame.data
 
     @staticmethod
     def _resolve(command: Command | str) -> Command:
         if isinstance(command, Command):
-            # Vẫn phải nằm trong registry: allowlist không có ngoại lệ.
+            # Must still be a registry entry: the allowlist has no exceptions.
             if COMMANDS.get(command.name) is not command:
                 raise CommandNotAllowed(
-                    "%r không phải mục của registry" % command.name
+                    "%r is not a registry entry" % command.name
                 )
             return command
         return COMMANDS[command] if command in COMMANDS else _reject(command)
 
-    # ------------------------------------------------------------------ nhận
+    # -------------------------------------------------------------- receiving
 
     def subscribe(self, callback: Callable[[Frame], None | Awaitable[None]]) -> None:
-        """Đăng ký nhận mọi khung đến — dùng cho bus telemetry và log UI."""
+        """Receive every incoming frame — used by the telemetry bus and the UI log."""
         self._subscribers.append(callback)
 
     def unsubscribe(self, callback) -> None:
@@ -233,15 +238,15 @@ class UdpLink:
             self._subscribers.remove(callback)
 
     def feed(self, data: bytes) -> list[Frame]:
-        """Nạp byte thô vào bộ tách khung. Tách riêng để test không cần socket."""
+        """Feed raw bytes into the frame splitter. Separate so tests need no socket."""
         self._buffer += data.decode("utf-8", errors="replace")
         frames = split_frames(self._buffer)
         if frames:
             last = self._buffer.rfind(frames[-1].raw)
             self._buffer = self._buffer[last + len(frames[-1].raw) :]
         elif len(self._buffer) > 4096:
-            # Không tìm thấy khung nào và buffer đang phình — vứt, giữ phần đuôi
-            # phòng khi một khung bị cắt ngang giữa hai gói.
+            # No frame found and the buffer is growing — drop it, but keep the
+            # tail in case a frame was split across two datagrams.
             self._buffer = self._buffer[-64:]
         return frames
 
@@ -271,8 +276,8 @@ class UdpLink:
                 result = callback(frame)
                 if asyncio.iscoroutine(result):
                     asyncio.create_task(result)
-            except Exception:  # pragma: no cover - subscriber lỗi không được giết link
-                log.exception("subscriber lỗi khi xử lý %s", frame.cmd3)
+            except Exception:  # pragma: no cover - a bad subscriber must not kill the link
+                log.exception("subscriber failed while handling %s", frame.cmd3)
 
     # ----------------------------------------------------------------- writer
 
@@ -291,7 +296,7 @@ class UdpLink:
                 self._transport.sendto(to_wire(frame), self.addr)
 
     async def _next_frame(self) -> str:
-        """Ưu tiên hàng gimbal; chỉ lấy hàng thường khi hàng ưu tiên rỗng."""
+        """Prefer the gimbal queue; take from the normal queue only when it is empty."""
         if not self._priority.empty():
             return self._priority.get_nowait()
         get_priority = asyncio.ensure_future(self._priority.get())
@@ -302,7 +307,8 @@ class UdpLink:
             )
             if get_priority in done:
                 if get_normal in done:
-                    # Cả hai cùng xong: giữ lại gói thường cho lượt sau, đừng vứt.
+                    # Both finished: put the normal packet back for the next
+                    # round rather than dropping it.
                     self._normal.put_nowait(get_normal.result())
                 return get_priority.result()
             return get_normal.result()
@@ -313,7 +319,7 @@ class UdpLink:
                 elif not task.cancelled() and task.exception() is None:
                     pass
 
-    # ------------------------------------------------------------------- log
+    # -------------------------------------------------------------------- log
 
     def _journal(self, direction: str, raw: str, frame: Frame | None = None) -> None:
         if self._log_file is None:
@@ -328,6 +334,6 @@ class UdpLink:
 
 def _reject(name: str) -> Command:
     raise CommandNotAllowed(
-        "%r không có trong registry. Allowlist chứ không phải blocklist: "
-        "lệnh chưa khai báo thì không gửi được." % name
+        "%r is not in the registry. Allowlist, not blocklist: an undeclared "
+        "command cannot be sent." % name
     )

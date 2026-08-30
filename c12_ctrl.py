@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Điều khiển gimbal-camera Skydroid C12 từ Linux (Rubik Pi 3) qua UDP.
+Control the Skydroid C12 gimbal camera from Linux (Rubik Pi 3) over UDP.
 
-Không cần RCSDK Android: toàn bộ giao thức là chuỗi ASCII "#TP..." gửi qua
-UDP tới camera. Xem PHAN_TICH_SDK_C12.md để biết bảng lệnh đầy đủ.
+No Android RCSDK needed: the whole protocol is ASCII "#TP..." strings sent over
+UDP to the camera. See PHAN_TICH_SDK_C12.md for the full command table.
 
   python3 c12_ctrl.py zoom-in
   python3 c12_ctrl.py yaw 20
@@ -18,13 +18,14 @@ DEFAULT_HOST = "192.168.144.108"
 DEFAULT_PORT = 5000
 DEFAULT_LOCAL_PORT = 5000
 
-# TopCameraCore.genSendControlCmd: tổng byte UTF-8 của thân lệnh, & 0xFF, hex hoa
+# TopCameraCore.genSendControlCmd: sum of the body's UTF-8 bytes, & 0xFF, upper hex
 def checksum(body):
     return body + "%02X" % (sum(body.encode("utf-8")) & 0xFF)
 
 
 def s16_hex(value):
-    """int16 bù 2 -> 4 ký tự hex hoa (SkydroidGimbalControlCore.short2Hex)."""
+    """int16 two's complement -> 4 uppercase hex chars
+    (SkydroidGimbalControlCore.short2Hex)."""
     return "%04X" % (int(value) & 0xFFFF)
 
 
@@ -53,14 +54,14 @@ class C12:
         try:
             self.sock.bind(("", local_port))
         except OSError as exc:
-            # Cổng 5000 hay bị app trợ lý/ground station chiếm
-            print("Không bind được cổng %d: %s" % (local_port, exc), file=sys.stderr)
-            print("Hãy tắt app trợ lý/ground station rồi thử lại.", file=sys.stderr)
+            # Port 5000 is often taken by a companion app or ground station
+            print("Could not bind port %d: %s" % (local_port, exc), file=sys.stderr)
+            print("Close the companion app / ground station and retry.", file=sys.stderr)
             raise
         self.sock.settimeout(timeout)
 
     def send(self, body, expect=None):
-        """Gửi một lệnh; nếu `expect` là mã lệnh 3 ký tự thì chờ và trả về DATA."""
+        """Send a command; if `expect` is a 3-char command word, wait and return DATA."""
         frame = checksum(body)
         if self.verbose:
             print("TX: %s" % frame)
@@ -70,7 +71,7 @@ class C12:
         return self._read_reply(expect)
 
     def _read_reply(self, cmd3):
-        """Đọc gói trả về, tách phần DATA của gói có CMD3 khớp."""
+        """Read the reply and extract the DATA of the frame whose CMD3 matches."""
         try:
             data, _ = self.sock.recvfrom(2048)
         except socket.timeout:
@@ -81,7 +82,7 @@ class C12:
         for line in text.replace("\r", "\n").split("\n"):
             idx = line.find(cmd3)
             if line.startswith("#") and idx > 0:
-                # ...<CMD3><DATA><CRC2>  -> bỏ 2 ký tự checksum cuối
+                # ...<CMD3><DATA><CRC2>  -> drop the trailing 2 checksum chars
                 return line[idx + 3:-2]
         return None
 
@@ -96,9 +97,10 @@ class C12:
         return int(raw, 16) if raw else None
 
     def zoom_set(self, level):
-        # SDK chặn cứng 0..4; dải thật là 0..67 nên ưu tiên zoom_in/zoom_out
+        # The SDK hard-caps this at 0..4; the real range is 0..67, so prefer
+        # zoom_in/zoom_out
         if not 0 <= level <= 4:
-            raise ValueError("setZoomRatios chỉ nhận 0..4 (dùng zoom-in/zoom-out)")
+            raise ValueError("setZoomRatios only accepts 0..4 (use zoom-in/zoom-out)")
         return self.send("#TPUD2wDZM0%d" % level)
 
     def take_picture(self):   return self.send("#TPUD2wCAP01")
@@ -160,7 +162,7 @@ class C12:
 
     @staticmethod
     def _speed_raw(dps):
-        # hằng số từ bytecode: chia 0.5, clamp ±127  ->  ±63.5 °/s
+        # bytecode constants: divide by 0.5, clamp ±127  ->  ±63.5 °/s
         return max(-127, min(127, int(float(dps) / 0.5)))
 
     def goto_yaw(self, angle):

@@ -1,21 +1,22 @@
-"""Khung lệnh Topotek cho Skydroid C12.
+"""Topotek command frame for the Skydroid C12.
 
     #TP U D 2 w REC 01 44
-    │   │ │ │ │  │   │  └── checksum: sum(byte) & 0xFF, 2 hex hoa
-    │   │ │ │ │  │   └───── data, số ký tự = trường length
-    │   │ │ │ │  └───────── command word, 3 ký tự
+    │   │ │ │ │  │   │  └── checksum: sum(byte) & 0xFF, 2 uppercase hex chars
+    │   │ │ │ │  │   └───── data, character count given by the length field
+    │   │ │ │ │  └───────── command word, 3 chars
     │   │ │ │ └──────────── 'r' = read, 'w' = write
-    │   │ │ └────────────── length: số ký tự của data, 1 ký tự hex
-    │   │ └──────────────── địa chỉ đích: D = camera, G = gimbal
-    │   └────────────────── địa chỉ nguồn: U = host
-    └────────────────────── header, thường "#TP"
+    │   │ │ └────────────── length: data character count, 1 hex char
+    │   │ └──────────────── destination address: D = camera, G = gimbal
+    │   └────────────────── source address: U = host
+    └────────────────────── header, normally "#TP"
 
-Hai chi tiết dễ làm hỏng code, đều lấy từ bytecode RCSDK:
+Two details that break code if missed, both taken from the RCSDK bytecode:
 
-* Gói ghi xuống socket **kết thúc bằng CRLF**. `c12_probe.py` không gửi phần này và
-  đó có thể là lý do một số lệnh đọc không phản hồi.
-* Lệnh `EXT` dùng header **chữ thường** ``#tp``. Checksum tính trên đúng chữ thường đó,
-  nên tuyệt đối không ``.upper()`` phần thân ở bất cứ đâu trong module này.
+* Packets written to the socket **end with CRLF**. `c12_probe.py` omits it, and
+  that may be why some read commands never answered there.
+* The `EXT` command uses a **lowercase** header ``#tp``. The checksum is computed
+  over that exact lowercase text, so never ``.upper()`` the body anywhere in
+  this module.
 """
 
 from __future__ import annotations
@@ -26,10 +27,11 @@ from dataclasses import dataclass
 HEADER = "#TP"
 HEADER_LOWER = "#tp"
 
-#: Byte kết thúc gói khi ghi xuống socket (SkydroidGimbalControlCore.sendCmdData).
+#: Packet terminator when writing to the socket
+#: (SkydroidGimbalControlCore.sendCmdData).
 TERMINATOR = b"\r\n"
 
-#: Tổng độ dài khung không tính data: header(3) + src(1) + dest(1) + len(1)
+#: Total frame length excluding data: header(3) + src(1) + dest(1) + len(1)
 #: + rw(1) + cmd3(3) + crc(2).
 _OVERHEAD = 12
 
@@ -37,16 +39,16 @@ _FRAME_START = re.compile(r"#[Tt][Pp]")
 
 
 class FrameError(ValueError):
-    """Khung lệnh sai định dạng, sai checksum, hoặc sai trường length."""
+    """Malformed frame, bad checksum, or a length field that does not match."""
 
 
 def checksum(body: str) -> str:
-    """Tổng byte UTF-8 của thân lệnh, lấy 8 bit thấp, in hex hoa 2 ký tự."""
+    """Sum of the body's UTF-8 bytes, low 8 bits, as 2 uppercase hex chars."""
     return "%02X" % (sum(body.encode("utf-8")) & 0xFF)
 
 
 def seal(body: str) -> str:
-    """Gắn checksum vào thân lệnh."""
+    """Append the checksum to a frame body."""
     return body + checksum(body)
 
 
@@ -58,7 +60,7 @@ def build(
     src: str = "U",
     header: str = HEADER,
 ) -> str:
-    """Dựng một khung hoàn chỉnh kèm checksum.
+    """Build a complete frame including its checksum.
 
     >>> build("D", "w", "CAP", "01")
     '#TPUD2wCAP013E'
@@ -66,20 +68,20 @@ def build(
     '#tpUD4wEXT0110FE'
     """
     if len(dest) != 1 or len(src) != 1:
-        raise FrameError("src/dest phải là 1 ký tự")
+        raise FrameError("src/dest must be exactly 1 character")
     if rw not in ("r", "w"):
-        raise FrameError("rw phải là 'r' hoặc 'w', nhận %r" % rw)
+        raise FrameError("rw must be 'r' or 'w', got %r" % rw)
     if len(cmd3) != 3:
-        raise FrameError("command word phải là 3 ký tự, nhận %r" % cmd3)
+        raise FrameError("command word must be 3 characters, got %r" % cmd3)
     n = len(data)
     if not 0 <= n <= 15:
-        raise FrameError("data dài %d ký tự, trường length chỉ chứa được 0..15" % n)
+        raise FrameError("data is %d characters; the length field only holds 0..15" % n)
     return seal(f"{header}{src}{dest}{n:X}{rw}{cmd3}{data}")
 
 
 @dataclass(frozen=True)
 class Frame:
-    """Một khung đã tách trường."""
+    """A frame split into its fields."""
 
     raw: str
     header: str
@@ -95,37 +97,38 @@ class Frame:
     def body(self) -> str:
         return self.raw[:-2]
 
-    def __str__(self) -> str:  # pragma: no cover - tiện debug
+    def __str__(self) -> str:  # pragma: no cover - debugging convenience
         return self.raw
 
 
 def parse(text: str, *, verify: bool = True) -> Frame:
-    """Tách một khung. Ném :class:`FrameError` nếu sai định dạng hoặc checksum.
+    """Split one frame. Raises :class:`FrameError` on bad format or checksum.
 
     >>> parse("#TPUD2wCAP013E").cmd3
     'CAP'
     """
     text = text.strip()
     if len(text) < _OVERHEAD:
-        raise FrameError("khung quá ngắn: %r" % text)
+        raise FrameError("frame too short: %r" % text)
     if not _FRAME_START.match(text):
-        raise FrameError("thiếu header #TP: %r" % text)
+        raise FrameError("missing #TP header: %r" % text)
 
     header, src, dest = text[:3], text[3], text[4]
     try:
         length = int(text[5], 16)
     except ValueError:
-        raise FrameError("trường length không phải hex: %r" % text[5]) from None
+        raise FrameError("length field is not hex: %r" % text[5]) from None
     rw, cmd3 = text[6], text[7:10]
     data = text[10 : 10 + length]
     crc = text[10 + length : 12 + length]
 
     if len(data) != length:
         raise FrameError(
-            "length nói %d ký tự data nhưng chỉ có %d: %r" % (length, len(data), text)
+            "length says %d data characters but only %d are present: %r"
+            % (length, len(data), text)
         )
     if len(crc) != 2:
-        raise FrameError("thiếu checksum: %r" % text)
+        raise FrameError("missing checksum: %r" % text)
 
     frame = Frame(
         raw=text[: 12 + length],
@@ -142,20 +145,21 @@ def parse(text: str, *, verify: bool = True) -> Frame:
         expected = checksum(frame.body)
         if expected != crc.upper():
             raise FrameError(
-                "checksum sai cho %r: tính được %s, nhận %s" % (frame.raw, expected, crc)
+                "bad checksum for %r: computed %s, received %s"
+                % (frame.raw, expected, crc)
             )
     return frame
 
 
 def split_frames(text: str, *, verify: bool = True) -> list[Frame]:
-    """Tách mọi khung hợp lệ trong một buffer.
+    """Split out every valid frame in a buffer.
 
-    Không dựa vào dấu phân cách: định vị bằng header rồi cắt đúng ``12 + length``
-    ký tự. Camera gộp nhiều khung trong một gói UDP, và không phải khi nào cũng
-    chèn CRLF giữa chúng — cách này chịu được cả hai kiểu.
+    Does not rely on a delimiter: it locates the header, then cuts exactly
+    ``12 + length`` characters. The camera packs several frames into one UDP
+    datagram and does not always put CRLF between them — this handles both.
 
-    Khung hỏng bị bỏ qua thay vì làm hỏng cả buffer, vì một gói méo không nên
-    khiến ta mất luôn gói tư thế đi kèm sau nó.
+    A corrupt frame is skipped rather than poisoning the whole buffer: one
+    mangled packet should not cost us the attitude frame that follows it.
     """
     out: list[Frame] = []
     pos = 0
@@ -174,5 +178,5 @@ def split_frames(text: str, *, verify: bool = True) -> list[Frame]:
 
 
 def to_wire(frame: str) -> bytes:
-    """Chuỗi khung → byte gửi lên socket, kèm CRLF."""
+    """Frame string → bytes for the socket, CRLF included."""
     return frame.encode("utf-8") + TERMINATOR

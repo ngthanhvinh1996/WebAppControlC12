@@ -1,8 +1,8 @@
-"""Ca vàng cho codec: 43 literal lấy nguyên từ hai tài liệu nguồn.
+"""Golden cases for the codec: 43 literals taken verbatim from both source documents.
 
-Cả hai nguồn mâu thuẫn nhau về *ngữ nghĩa* nhưng khớp nhau hoàn toàn về khung và
-checksum — nên toàn bộ 43 literal đều dùng được làm ca kiểm chứng, bất kể sau này
-ta diễn giải chúng thế nào.
+The two sources disagree about *meaning* but agree perfectly on framing and
+checksums — so all 43 literals work as verification cases regardless of how we
+end up interpreting them.
 """
 
 import pytest
@@ -19,10 +19,10 @@ from c12ctl.protocol.codec import (
 )
 
 # --------------------------------------------------------------------------
-# Literal đã kiểm chứng
+# Verified literals
 # --------------------------------------------------------------------------
 
-# Từ PHAN_TICH_SDK_C12.md — dịch ngược bytecode rcsdk-v1.9.2.aar
+# From PHAN_TICH_SDK_C12.md — decompiled rcsdk-v1.9.2.aar bytecode
 BYTECODE_LITERALS = [
     "#TPUD2wCAP013E", "#TPUD2wREC0144", "#TPUD2wREC0043", "#TPUD2rVER0051",
     "#TPUD2wDZM0A65", "#TPUD2wDZM0B66", "#TPUD2wDZM0054", "#TPUD2wDZM0458",
@@ -34,7 +34,7 @@ BYTECODE_LITERALS = [
     "#TPUG2wGAA0A46", "#TPUG2wGAA0035", "#TPUG6wGAY0BB8103E", "#TPUG6wGAPDCD8104C",
 ]
 
-# Từ skydroid-c12-protocol.md — chuỗi rút ra từ APK
+# From skydroid-c12-protocol.md — strings extracted from the APK
 APK_LITERALS = [
     "#TPUD2wRST0163", "#TPUG2wPTZ006A", "#TPUG2wGSY6368", "#TPUG2wGSY9D7C",
     "#TPUM2wZMC015D", "#TPUM2wFCC013F", "#TPUD2wTAR0050", "#TPUD2wTAR0A61",
@@ -45,9 +45,9 @@ ALL_LITERALS = BYTECODE_LITERALS + APK_LITERALS
 
 
 def test_golden_set_is_complete():
-    """43 literal — con số nêu trong PLAN_WEBAPP_C12.md."""
+    """43 literals — the number stated in PLAN_WEBAPP_C12.md."""
     assert len(ALL_LITERALS) == 43
-    assert len(set(ALL_LITERALS)) == 43, "có literal trùng lặp"
+    assert len(set(ALL_LITERALS)) == 43, "there is a duplicate literal"
 
 
 @pytest.mark.parametrize("literal", ALL_LITERALS)
@@ -63,7 +63,7 @@ def test_seal_reproduces_literal(literal):
 
 @pytest.mark.parametrize("literal", ALL_LITERALS)
 def test_roundtrip_parse_then_build(literal):
-    """parse rồi build lại phải ra đúng chuỗi ban đầu."""
+    """Parsing then rebuilding must reproduce the original string exactly."""
     f = parse(literal)
     assert build(f.dest, f.rw, f.cmd3, f.data, src=f.src, header=f.header) == literal
 
@@ -75,24 +75,26 @@ def test_length_field_matches_data(literal):
 
 
 # --------------------------------------------------------------------------
-# Trường hợp riêng
+# Special cases
 # --------------------------------------------------------------------------
 
 
 def test_lowercase_header_for_ext():
-    """EXT dùng header chữ thường, checksum tính trên đúng chữ thường đó.
+    """EXT uses a lowercase header, and the checksum covers that lowercase text.
 
-    Đây là bẫy thật: bất kỳ chỗ nào lỡ .upper() thân lệnh sẽ sinh checksum sai.
+    This is a real trap: anywhere that accidentally .upper()s the body produces a
+    wrong checksum.
     """
     frame = build("D", "w", "EXT", "0110", header=HEADER_LOWER)
     assert frame == "#tpUD4wEXT0110FE"
     assert parse(frame).header == "#tp"
-    # Cùng nội dung nhưng header hoa cho checksum khác — chứng minh không hoán đổi được.
+    # Same content with an uppercase header yields a different checksum — proof
+    # the two are not interchangeable.
     assert build("D", "w", "EXT", "0110") != frame
 
 
 def test_hex_length_field_above_nine():
-    """length là 1 ký tự hex: 11 → 'B', 12 → 'C', 15 → 'F'."""
+    """The length field is one hex character: 11 → 'B', 12 → 'C', 15 → 'F'."""
     assert build("D", "w", "VOM", "0" * 11)[5] == "B"
     assert build("D", "w", "IQE", "0" * 12)[5] == "C"
     assert build("D", "w", "TIM", "0" * 15)[5] == "F"
@@ -104,7 +106,7 @@ def test_data_longer_than_fifteen_rejected():
 
 
 def test_parse_camera_reply_direction():
-    """Camera trả về với src/dest đảo: #TPDU..."""
+    """The camera replies with src/dest swapped: #TPDU..."""
     reply = seal("#TPDU2rDZM0A")
     f = parse(reply)
     assert (f.src, f.dest) == ("D", "U")
@@ -113,7 +115,7 @@ def test_parse_camera_reply_direction():
 
 
 def test_bad_checksum_rejected():
-    with pytest.raises(FrameError, match="checksum sai"):
+    with pytest.raises(FrameError, match="bad checksum"):
         parse("#TPUD2wCAP0100")
 
 
@@ -132,7 +134,8 @@ def test_missing_header_rejected():
 
 
 def test_length_longer_than_payload_rejected():
-    """Trường length nói 6 ký tự nhưng chỉ có 2 → phải từ chối, không đọc lẹm."""
+    """The length field says 6 characters but only 2 are there → reject rather
+    than reading past the end."""
     with pytest.raises(FrameError, match="length"):
         parse("#TPUD6wCAP013E")
 
@@ -148,7 +151,7 @@ def test_bad_cmd3_rejected():
 
 
 # --------------------------------------------------------------------------
-# split_frames — camera gộp nhiều khung trong một gói UDP
+# split_frames — the camera packs several frames into one UDP datagram
 # --------------------------------------------------------------------------
 
 
@@ -158,18 +161,18 @@ def test_split_crlf_separated():
 
 
 def test_split_without_separator():
-    """Không dựa vào CRLF: cắt theo đúng 12 + length ký tự."""
+    """Does not rely on CRLF: it cuts exactly 12 + length characters."""
     buf = "#TPUD2wCAP013E" + "#TPUG6wGAY0BB8103E" + "#TPUD2rVER0051"
     assert [f.cmd3 for f in split_frames(buf)] == ["CAP", "GAY", "VER"]
 
 
 def test_split_skips_garbage_between_frames():
-    buf = "rác#TPUD2wCAP013E\x00\xffrác#TPUD2rVER0051"
+    buf = "junk#TPUD2wCAP013E\x00\xffjunk#TPUD2rVER0051"
     assert [f.cmd3 for f in split_frames(buf)] == ["CAP", "VER"]
 
 
 def test_split_skips_bad_checksum_but_keeps_the_rest():
-    """Một gói méo không được làm mất gói tư thế đi ngay sau nó."""
+    """One mangled packet must not cost us the attitude frame right after it."""
     buf = "#TPUD2wCAP0100" + "#TPUG6wGAY0BB8103E"
     assert [f.cmd3 for f in split_frames(buf)] == ["GAY"]
 
@@ -194,5 +197,5 @@ def test_split_lowercase_header_found():
 
 
 def test_wire_appends_crlf():
-    """Bytecode nối CRLF khi ghi xuống socket; c12_probe.py thiếu phần này."""
+    """The bytecode appends CRLF when writing to the socket; c12_probe.py omits it."""
     assert to_wire("#TPUD2rVER0051") == b"#TPUD2rVER0051\r\n"

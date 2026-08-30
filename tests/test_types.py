@@ -1,4 +1,4 @@
-"""Mã hoá tham số — chỗ hai tài liệu nguồn mâu thuẫn nhau nhiều nhất."""
+"""Parameter encoding — where the two source documents disagree the most."""
 
 import pytest
 
@@ -21,7 +21,7 @@ from c12ctl.protocol.types import (
 )
 
 # --------------------------------------------------------------------------
-# Tốc độ — bytecode nói raw = °/s ÷ 0.5, clamp ±127
+# Speed — the bytecode says raw = °/s ÷ 0.5, clamped to ±127
 # --------------------------------------------------------------------------
 
 
@@ -45,28 +45,29 @@ def test_speed_clamps_low(dps):
 
 
 def test_max_speed_is_63_5():
-    """Dải thật ±63.5 °/s, không phải ±99 như bảng trong protocol.md."""
+    """The real range is ±63.5 °/s, not the ±99 in protocol.md's table."""
     assert MAX_SPEED_DPS == 63.5
 
 
 def test_speed_frames_match_protocol_md_bytes_but_not_its_labels():
-    """Hai tài liệu khớp nhau về BYTE, lệch nhau về NHÃN đúng hệ số 2.
+    """The two documents agree on the BYTES and differ on the LABELS by exactly 2×.
 
-    protocol.md gọi #TPUG2wGSY3264 là "speed +50"; theo công thức bytecode nó là
-    +25 °/s. Nếu UI tin nhãn của protocol.md thì mọi cảm nhận về tay lái sẽ sai gấp đôi.
+    protocol.md calls #TPUG2wGSY3264 "speed +50"; by the bytecode formula it is
+    +25 °/s. If the UI trusted protocol.md's labels, every bit of stick feel
+    would be off by a factor of two.
     """
     def yaw(dps):
         return build("G", "w", "GSY", u8_hex(speed_to_raw(dps)))
 
-    assert yaw(25) == "#TPUG2wGSY3264"      # protocol.md ghi nhãn "+50"
-    assert yaw(-25) == "#TPUG2wGSYCE87"     # protocol.md ghi nhãn "−50"
-    assert yaw(0) == "#TPUG2wGSY005F"       # dừng — hai nguồn đồng ý
-    assert yaw(63.5) == "#TPUG2wGSY7F7C"    # tối đa thật, protocol.md không có
+    assert yaw(25) == "#TPUG2wGSY3264"      # protocol.md labels this "+50"
+    assert yaw(-25) == "#TPUG2wGSYCE87"     # protocol.md labels this "−50"
+    assert yaw(0) == "#TPUG2wGSY005F"       # stop — both sources agree
+    assert yaw(63.5) == "#TPUG2wGSY7F7C"    # the real maximum, absent from protocol.md
 
 
 @pytest.mark.parametrize("dps", [0, 3.7, -12.4, 63.5, -63.5, 100, -100])
 def test_speed_roundtrip_is_clamped_quantised_value(dps):
-    """decode(encode(x)) == clamp(quantise(x)) — bước 0.5 nên phải khớp tuyệt đối."""
+    """decode(encode(x)) == clamp(quantise(x)) — 0.5 steps, so it must match exactly."""
     assert raw_to_speed(speed_to_raw(dps)) == clamp_speed(dps)
 
 
@@ -76,7 +77,7 @@ def test_speed_quantises_to_half_degree_steps():
 
 
 # --------------------------------------------------------------------------
-# Góc — bytecode nói ×100, clamp ±9000
+# Angles — the bytecode says ×100, clamped to ±9000
 # --------------------------------------------------------------------------
 
 
@@ -99,7 +100,7 @@ def test_max_angle_is_90():
 
 
 def test_goto_frames_match_bytecode_examples():
-    """PHAN_TICH_SDK_C12.md §5.3 nêu hai ví dụ — dựng lại phải khớp."""
+    """PHAN_TICH_SDK_C12.md §5.3 gives two examples — rebuilding must match them."""
     assert build("G", "w", "GAY", s16_hex(angle_to_raw(30)) + "10") == "#TPUG6wGAY0BB8103E"
     assert build("G", "w", "GAP", s16_hex(angle_to_raw(-90)) + "10") == "#TPUG6wGAPDCD8104C"
 
@@ -110,7 +111,7 @@ def test_angle_roundtrip(deg):
 
 
 # --------------------------------------------------------------------------
-# Hex có dấu
+# Signed hex
 # --------------------------------------------------------------------------
 
 
@@ -130,13 +131,14 @@ def test_u8_negative_is_twos_complement():
 
 
 # --------------------------------------------------------------------------
-# Palette — 11 mục, IMG chứ không phải TAR
+# Palette — 11 entries, on IMG rather than TAR
 # --------------------------------------------------------------------------
 
 
 def test_exactly_eleven_palettes():
-    """protocol.md đếm được đúng 11 palette trong resource APK; bảng IMG của
-    bytecode cũng có đúng 11. Hai nguồn độc lập, cùng con số."""
+    """protocol.md counts exactly 11 palettes in the APK resources; the
+    bytecode's IMG table also has exactly 11. Two independent sources, same
+    number."""
     assert len(Palette) == 11
 
 
@@ -157,12 +159,12 @@ def test_palette_frames(palette, frame):
 
 
 # --------------------------------------------------------------------------
-# Giải mã telemetry
+# Telemetry decoding
 # --------------------------------------------------------------------------
 
 
 def test_attitude_from_gac_payload():
-    """GAC chở 3 int16 hex liên tiếp, chia 100 ra độ."""
+    """GAC carries 3 consecutive int16 hex values; divide by 100 for degrees."""
     data = s16_hex(3000) + s16_hex(-4500) + s16_hex(0)
     att = Attitude.from_data(data)
     assert att.yaw == pytest.approx(30.0)
@@ -171,7 +173,7 @@ def test_attitude_from_gac_payload():
 
 
 def test_attitude_rejects_short_payload():
-    with pytest.raises(ValueError, match="12 ký tự"):
+    with pytest.raises(ValueError, match="12 data characters"):
         Attitude.from_data("0BB8")
 
 

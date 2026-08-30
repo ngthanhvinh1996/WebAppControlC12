@@ -1,14 +1,15 @@
-"""Pha 3 — lệnh ghi camera phải xác nhận được bằng một lệnh đọc.
+"""Phase 3 — camera writes must be confirmable by a read.
 
-Trọng tâm không phải "gói có được gửi không" (pha 0 đã lo) mà **"đọc lại thì
-thấy gì"**. Lệnh ghi của C12 không có phản hồi, nên ba tình huống dưới đây trông
-giống hệt nhau ở phía gửi và phải được phân biệt bằng bước đọc lại:
+The focus is not "was the packet sent" (phase 0 covers that) but **"what does the
+read-back see"**. C12 write commands have no reply, so the three situations below
+look identical from the sending side and must be told apart by reading back:
 
-* lệnh có tác dụng → ``ok=True``
-* lệnh tới nơi nhưng firmware bỏ qua → ``ok=False``
-* không có cách nào biết (lệnh đọc im lặng, chưa cắm thẻ) → ``ok=None``
+* the command took effect → ``ok=True``
+* the packet arrived but the firmware ignored it → ``ok=False``
+* there is no way to know (silent read, no card inserted) → ``ok=None``
 
-Ba sim con ở đầu file mô hình hoá đúng ba tình huống đó.
+The three simulator subclasses at the top of this file model exactly those three
+situations.
 """
 
 import asyncio
@@ -22,7 +23,7 @@ from c12ctl.transport.udp_link import UdpLink
 
 
 class QuietRead(C12Simulator):
-    """Camera trả lời mọi thứ trừ vài lệnh đọc — firmware thiếu lệnh đó."""
+    """A camera that answers everything except a few reads — firmware missing them."""
 
     def __init__(self, *a, quiet=(), **kw):
         super().__init__(*a, **kw)
@@ -35,7 +36,7 @@ class QuietRead(C12Simulator):
 
 
 class DeafWrite(C12Simulator):
-    """Gói ghi tới nơi nhưng không có tác dụng gì — kịch bản tệ nhất."""
+    """The write packet arrives but has no effect — the worst case."""
 
     def __init__(self, *a, ignore=(), **kw):
         super().__init__(*a, **kw)
@@ -48,10 +49,10 @@ class DeafWrite(C12Simulator):
 
 
 class SlowRecord(C12Simulator):
-    """REC có tác dụng thật, nhưng đọc lại chỉ thấy sau vài nhịp.
+    """REC really does take effect, but the read-back only sees it a few beats later.
 
-    Camera thật phải mở file trên thẻ trước khi trạng thái đổi — đọc lại một lần
-    rồi kết luận là sai.
+    A real camera has to open a file on the card before the state changes —
+    reading back once and concluding would be wrong.
     """
 
     lag = 2
@@ -73,7 +74,7 @@ async def _rig(sim_obj):
 
 @pytest.fixture
 async def rig():
-    """Simulator + link + service, chưa chạy vòng poll nền (test tự gọi)."""
+    """Simulator + link + service, with no background poll loop (tests drive it)."""
     sim, link, svc = await _rig(C12Simulator(seed=7))
 
     class Rig:
@@ -88,30 +89,30 @@ async def rig():
 
 
 # --------------------------------------------------------------------------
-# Bảng xác nhận
+# The verification table
 # --------------------------------------------------------------------------
 
 
 def test_every_camera_write_is_verifiable():
-    """Bất biến của pha 3: không lệnh ghi camera nào lọt ra ngoài bảng xác nhận.
+    """The phase 3 invariant: no camera write escapes the verification table.
 
-    Thêm một lệnh ghi vào registry mà quên khai báo cách đọc lại thì test này
-    hỏng — đó là mục đích của nó.
+    Add a write command to the registry and forget to declare how it is read
+    back, and this test breaks — which is the point.
     """
     writes = {n for n, c in COMMANDS.items()
               if n.startswith("camera.") and c.rw == "w"}
-    assert writes == set(WRITES), "lệnh ghi camera chưa khai báo cách xác nhận"
+    assert writes == set(WRITES), "a camera write has no declared verification"
 
 
 def test_verify_table_points_at_real_read_commands():
     for name, spec in WRITES.items():
-        assert spec.read in COMMANDS, "%s trỏ vào lệnh đọc không có" % name
+        assert spec.read in COMMANDS, "%s points at a missing read command" % name
         assert COMMANDS[spec.read].rw == "r"
         assert COMMANDS[spec.read].expect_reply is True
 
 
 # --------------------------------------------------------------------------
-# Đệm trạng thái
+# State cache
 # --------------------------------------------------------------------------
 
 
@@ -129,7 +130,7 @@ async def test_poll_fills_cache_from_camera(rig):
 
 
 async def test_cache_keeps_raw_data_for_unknown_formats(rig):
-    """Format thô của ``SDC`` chưa chốt — đệm phải giữ lại chuỗi gốc."""
+    """The raw ``SDC`` format is unsettled — the cache must keep the original string."""
     await rig.svc.poll_once(force=True)
     sd = rig.svc.fields["sdcard"]
     assert sd.raw and len(sd.raw) == 12
@@ -142,12 +143,12 @@ async def test_static_fields_are_read_once(rig):
     for _ in range(3):
         await asyncio.sleep(0.06)
         await rig.svc.poll_once()
-    assert rig.svc.fields["model"].replies == 1, "model không đổi thì đừng hỏi lại"
+    assert rig.svc.fields["model"].replies == 1, "the model never changes, do not re-ask"
     assert rig.svc.fields["recording"].replies > 1
 
 
 async def test_silent_field_backs_off_instead_of_jamming_the_poll():
-    """Lệnh đọc không tồn tại phải bị giãn ra: mỗi lần dò là một lần chờ timeout."""
+    """A nonexistent read must be spaced out: each probe costs a full timeout."""
     sim, link, svc = await _rig(QuietRead(seed=3, quiet={"VID"}))
     svc.dead_after, svc.dead_retry = 2, 30.0
     try:
@@ -160,8 +161,8 @@ async def test_silent_field_backs_off_instead_of_jamming_the_poll():
         checked = vid.checked_at
         await asyncio.sleep(0.06)
         await svc.poll_once()
-        assert vid.checked_at == checked, "trường đã chết vẫn bị dò mỗi vòng"
-        assert svc.fields["palette"].checked_at > checked, "trường sống vẫn phải dò"
+        assert vid.checked_at == checked, "a dead field is still probed every cycle"
+        assert svc.fields["palette"].checked_at > checked, "live fields must still poll"
     finally:
         await svc.close()
         await link.close()
@@ -169,7 +170,7 @@ async def test_silent_field_backs_off_instead_of_jamming_the_poll():
 
 
 async def test_poll_rests_while_the_link_is_saturated(rig):
-    """Gimbal quay 20 Hz thì hàng ưu tiên chiếm khe gửi — poll phải nhường."""
+    """At 20 Hz the priority queue owns the send slots — the poll must yield."""
     await rig.svc.poll_once(force=True)
     checked = rig.svc.fields["palette"].checked_at
 
@@ -178,16 +179,17 @@ async def test_poll_rests_while_the_link_is_saturated(rig):
     assert rig.svc.fields["palette"].checked_at == checked
     assert rig.svc.stats.skipped == 1
 
-    # "Đọc lại" là yêu cầu tường minh của người dùng — vẫn phải đi qua.
+    # "Refresh" is an explicit operator request — it must still go through.
     await rig.svc.poll_once(force=True)
     assert rig.svc.fields["palette"].checked_at > checked
 
 
 async def test_silence_under_saturation_is_not_evidence():
-    """Im lặng lúc link bão hoà nói về lưu lượng, không về firmware.
+    """Silence while the link is saturated is about traffic, not about firmware.
 
-    Không tách hai chuyện này ra thì gimbal quay vài giây là cả bảng trạng thái
-    camera bị đánh dấu "không hỗ trợ" — và im 30 giây theo cơ chế giãn.
+    Without separating the two, a few seconds of gimbal motion would mark the
+    whole camera state table "unsupported" — and silence it for 30 seconds under
+    the back-off rule.
     """
     sim, link, svc = await _rig(QuietRead(seed=29, quiet={"IMG"}))
     svc._busy = lambda: True
@@ -196,7 +198,7 @@ async def test_silence_under_saturation_is_not_evidence():
             await svc.poll_once(force=True)
         pal = svc.fields["palette"]
         assert pal.silent_streak == 0
-        assert pal.supported is None, "chưa kết luận được, không phải 'không hỗ trợ'"
+        assert pal.supported is None, "still undecided, not 'unsupported'"
         assert svc.stats.silent >= DEAD_AFTER
     finally:
         await svc.close()
@@ -205,14 +207,14 @@ async def test_silence_under_saturation_is_not_evidence():
 
 
 async def test_unverifiable_write_names_the_busy_link():
-    """Không xác nhận được lúc gimbal đang quay thì phải nói đúng lý do."""
+    """Failing to verify while the gimbal turns must state the real reason."""
     sim, link, svc = await _rig(QuietRead(seed=37, quiet={"IMG"}))
     svc._busy = lambda: True
     try:
         r = await svc.apply("palette", "SEPIA")
         assert r.ok is None
         assert "gimbal" in r.note and "read.palette" in r.note
-        assert sim.state.palette == "03", "lệnh vẫn được gửi"
+        assert sim.state.palette == "03", "the command is still sent"
     finally:
         await svc.close()
         await link.close()
@@ -230,7 +232,7 @@ async def test_background_loop_refreshes_state(rig):
 
 
 # --------------------------------------------------------------------------
-# Xác nhận trực tiếp
+# Direct verification
 # --------------------------------------------------------------------------
 
 
@@ -253,7 +255,7 @@ async def test_record_stop_confirmed(rig):
 async def test_palette_confirmed_and_lands_on_img(rig):
     r = await rig.svc.apply("palette", "IRONBOW")
     assert r.ok is True
-    assert r.frame == "#TPUD2wIMG044A", "đúng khung palette trong PLAN §1.4"
+    assert r.frame == "#TPUD2wIMG044A", "the exact palette frame from PLAN §1.4"
     assert r.actual == "IRONBOW"
     assert rig.sim.state.palette == "04"
 
@@ -265,7 +267,7 @@ async def test_resolution_confirmed(rig):
 
 
 async def test_thermal_value_is_clamped_and_expectation_follows(rig):
-    """Kỳ vọng phải là giá trị **đã clamp**, không phải số người dùng gõ vào."""
+    """The expectation must be the **clamped** value, not the number typed in."""
     r = await rig.svc.apply("thermal_brightness", 150)
     assert r.expected == "100" and r.actual == 100 and r.ok is True
     assert rig.sim.state.thermal["TIB"] == 100
@@ -280,7 +282,7 @@ async def test_thermal_roundtrip_all_seven(rig):
 
 
 # --------------------------------------------------------------------------
-# Xác nhận tương đối và gián tiếp
+# Relative and indirect verification
 # --------------------------------------------------------------------------
 
 
@@ -292,11 +294,11 @@ async def test_zoom_in_compares_before_and_after(rig):
 
 
 async def test_zoom_out_at_floor_counts_as_confirmed(rig):
-    """Đáy zoom biết chắc là 0 — không đổi ở đó là đúng, không phải lỗi."""
+    """The zoom floor is known to be 0 — no change there is correct, not a failure."""
     r = await rig.svc.apply("zoom_out")
     assert r.before == 0 and r.actual == 0
     assert r.ok is True
-    assert "đáy" in r.expected or "đáy" in r.note
+    assert "floor" in r.note
 
 
 async def test_zoom_out_after_zoom_in(rig):
@@ -308,21 +310,21 @@ async def test_zoom_out_after_zoom_in(rig):
 
 async def test_snap_is_confirmed_only_indirectly(rig):
     r = await rig.svc.apply("snap")
-    assert r.kind == "indirect", "CAP không có lệnh đọc tương ứng — phải nói rõ"
+    assert r.kind == "indirect", "CAP has no corresponding read — say so plainly"
     assert r.read == "read.sdcard" and r.ok is True
     assert r.actual.free_mb < r.before.free_mb
     assert rig.sim.state.photos == 1
 
 
 async def test_snap_without_a_card_is_unverifiable_not_failed():
-    """Chưa cắm thẻ: lệnh vẫn gửi, nhưng không được nhận là đã chụp."""
+    """No card inserted: the command still goes out, but counts as unconfirmed."""
     sim, link, svc = await _rig(C12Simulator(seed=11))
     sim.state.sd_total_mb = sim.state.sd_free_mb = 0
     try:
         r = await svc.apply("snap")
-        assert r.ok is None, "không xác nhận được ≠ thất bại"
-        assert "thẻ" in r.note
-        assert r.frame == "#TPUD2wCAP013E", "lệnh vẫn phải được gửi"
+        assert r.ok is None, "unverifiable is not the same as failed"
+        assert "card" in r.note
+        assert r.frame == "#TPUD2wCAP013E", "the command must still be sent"
         assert svc.stats.unverified == 1 and svc.stats.mismatched == 0
     finally:
         await svc.close()
@@ -331,18 +333,18 @@ async def test_snap_without_a_card_is_unverifiable_not_failed():
 
 
 # --------------------------------------------------------------------------
-# Ba trạng thái xác nhận
+# The three confirmation states
 # --------------------------------------------------------------------------
 
 
 async def test_ignored_write_is_reported_as_mismatch():
-    """Gói tới nơi, firmware bỏ qua. Đây là ca mà "đã gửi" nói dối."""
+    """The packet arrives, the firmware ignores it. This is where "sent" lies."""
     sim, link, svc = await _rig(DeafWrite(seed=13, ignore={"IMG"}))
     try:
         r = await svc.apply("palette", "RAINBOW")
         assert r.ok is False
         assert r.expected == "RAINBOW" and r.actual == "WHITE_HOT"
-        assert r.attempts == svc.attempts, "phải thử lại đủ số lần trước khi kết luận"
+        assert r.attempts == svc.attempts, "it must retry fully before concluding"
         assert svc.stats.mismatched == 1 and svc.stats.verified == 0
     finally:
         await svc.close()
@@ -351,13 +353,13 @@ async def test_ignored_write_is_reported_as_mismatch():
 
 
 async def test_silent_read_makes_the_write_unverifiable():
-    """``IMG`` ghi được nhưng đọc im lặng → không kết luận được, phải nói rõ."""
+    """``IMG`` writes fine but reads silent → no conclusion, and say so."""
     sim, link, svc = await _rig(QuietRead(seed=17, quiet={"IMG"}))
     try:
         r = await svc.apply("palette", "NIGHT")
         assert r.ok is None
         assert "read.palette" in r.note
-        assert sim.state.palette == "06", "lệnh vẫn tới camera"
+        assert sim.state.palette == "06", "the command still reached the camera"
         assert svc.stats.unverified == 1
     finally:
         await svc.close()
@@ -366,24 +368,25 @@ async def test_silent_read_makes_the_write_unverifiable():
 
 
 async def test_stale_cache_never_becomes_a_verdict():
-    """Camera im lặng SAU KHI đệm đã có giá trị — giá trị cũ là cái bẫy.
+    """The camera goes silent AFTER the cache holds a value — the old value is the trap.
 
-    Đệm cố ý giữ giá trị cũ kèm tuổi. Nếu bước xác nhận so với giá trị đó thì
-    một lần im lặng biến thành "camera vẫn báo giá trị cũ" = ``ok=False``, kết
-    luận rút ra từ số liệu chưa hề được đọc lại.
+    The cache deliberately keeps the old value with its age. If the confirmation
+    step compared against it, one silence would turn into "the camera still
+    reports the old value" = ``ok=False``, a verdict drawn from data that was
+    never read back.
     """
     sim, link, svc = await _rig(QuietRead(seed=41))
     try:
         await svc.poll_once(force=True)
         assert svc.fields["palette"].value == "WHITE_HOT"
 
-        sim.quiet.add("IMG")                       # từ đây camera câm
+        sim.quiet.add("IMG")                       # the camera goes mute from here
         r = await svc.apply("palette", "IRONBOW")
-        assert r.ok is None, "im lặng ≠ camera báo giá trị cũ"
-        assert r.actual is None, "không được trưng giá trị đệm ra như vừa đọc"
+        assert r.ok is None, "silence is not the camera reporting the old value"
+        assert r.actual is None, "do not present the cached value as freshly read"
         assert "read.palette" in r.note
         assert svc.stats.mismatched == 0 and svc.stats.unverified == 1
-        assert svc.fields["palette"].value == "WHITE_HOT", "đệm vẫn giữ giá trị cũ"
+        assert svc.fields["palette"].value == "WHITE_HOT", "the cache keeps the old value"
     finally:
         await svc.close()
         await link.close()
@@ -391,12 +394,12 @@ async def test_stale_cache_never_becomes_a_verdict():
 
 
 async def test_confirm_retries_before_giving_up():
-    """Camera cần vài nhịp mới đổi trạng thái — một lần đọc là chưa đủ."""
+    """The camera needs a few beats to change state — one read is not enough."""
     sim, link, svc = await _rig(SlowRecord(seed=19))
     try:
         r = await svc.apply("record_start")
         assert r.ok is True
-        assert r.attempts >= 2, "phải là kết quả của lần đọc lại thứ hai trở đi"
+        assert r.attempts >= 2, "this must be the result of the second read-back or later"
     finally:
         await svc.close()
         await link.close()
@@ -404,7 +407,7 @@ async def test_confirm_retries_before_giving_up():
 
 
 async def test_lost_packets_still_converge():
-    """Chaos 30%: đọc lại nhiều lần bù được gói mất."""
+    """30% chaos: repeated read-backs make up for the lost packets."""
     sim, link, svc = await _rig(C12Simulator(seed=23, chaos_loss=0.3))
     svc.attempts = 6
     try:
@@ -414,7 +417,7 @@ async def test_lost_packets_still_converge():
             if r.ok is True:
                 ok = True
                 break
-        assert ok, "6 lần đọc lại × 5 lần thử vẫn không xác nhận nổi"
+        assert ok, "6 read-backs × 5 attempts and still nothing confirmed"
     finally:
         await svc.close()
         await link.close()
@@ -437,7 +440,7 @@ async def test_apply_refuses_anything_but_verifiable_camera_writes(rig, name):
 
 
 async def test_bad_argument_sends_nothing(rig):
-    """Kỳ vọng dựng trước khi gửi: tham số sai thì không gói nào rời backend."""
+    """The expectation is built before sending: a bad parameter leaves no packet."""
     before = rig.sim.rx_count
     with pytest.raises(ValueError):
         await rig.svc.apply("palette", "NEON")
@@ -452,7 +455,7 @@ async def test_missing_argument_is_rejected(rig):
 
 
 # --------------------------------------------------------------------------
-# Báo cáo trạng thái
+# State reporting
 # --------------------------------------------------------------------------
 
 
@@ -462,7 +465,7 @@ async def test_as_dict_is_json_friendly(rig):
     await rig.svc.poll_once(force=True)
     await rig.svc.apply("zoom_in")
     body = rig.svc.as_dict()
-    json.dumps(body)                       # không được ném
+    json.dumps(body)                       # must not raise
 
     assert body["fields"]["sdcard"]["value"]["present"] is True
     assert body["last_apply"]["ok"] is True
@@ -481,5 +484,5 @@ async def test_field_reports_age_and_support(rig):
 
 
 def test_dead_after_default_is_small_enough_to_matter():
-    """Giá trị mặc định là một quyết định, không phải số ngẫu nhiên."""
+    """The default is a decision, not an arbitrary number."""
     assert 2 <= DEAD_AFTER <= 5

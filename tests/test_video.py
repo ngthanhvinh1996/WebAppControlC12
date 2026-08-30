@@ -1,4 +1,4 @@
-"""Tầng video: bus, nguồn, colormap, cầu MJPEG."""
+"""The video layer: bus, sources, colormap, MJPEG bridge."""
 
 import asyncio
 import time
@@ -18,22 +18,22 @@ def img(h=8, w=8, c=3):
 
 
 # --------------------------------------------------------------------------
-# FrameBus — kỷ luật "không hàng đợi"
+# FrameBus — the "no queue" discipline
 # --------------------------------------------------------------------------
 
 
 async def test_bus_latest_wins_no_queueing():
-    """Đây là bất biến quan trọng nhất của cả tầng video.
+    """The most important invariant in the whole video layer.
 
-    Consumer chậm phải NHẢY CÓC tới khung mới nhất, không lần lượt qua từng khung
-    đã lỡ. Queue tích khung là tích độ trễ.
+    A slow consumer must SKIP AHEAD to the newest frame rather than walking
+    through every frame it missed. Queued frames are queued latency.
     """
     bus = FrameBus()
     bus.bind_loop(asyncio.get_running_loop())
     for i in range(100):
         bus.publish(img())
     frame = await bus.next_frame(after_seq=0)
-    assert frame.seq == 100, "phải nhảy thẳng tới khung 100, không trả khung 1"
+    assert frame.seq == 100, "must jump straight to frame 100, not return frame 1"
 
 
 async def test_bus_blocks_until_new_frame():
@@ -42,7 +42,7 @@ async def test_bus_blocks_until_new_frame():
     bus.publish(img())
     task = asyncio.create_task(bus.next_frame(after_seq=1))
     await asyncio.sleep(0.02)
-    assert not task.done(), "không được trả khung cũ"
+    assert not task.done(), "must not hand back the old frame"
     bus.publish(img())
     assert (await asyncio.wait_for(task, 1)).seq == 2
 
@@ -61,11 +61,12 @@ async def test_bus_timeout_returns_none_and_cleans_up():
     bus = FrameBus()
     bus.bind_loop(asyncio.get_running_loop())
     assert await bus.next_frame(timeout=0.05) is None
-    assert bus._waiters == [], "waiter timeout phải được dọn"
+    assert bus._waiters == [], "a timed-out waiter must be cleaned up"
 
 
 async def test_bus_wakes_from_another_thread():
-    """Source chạy trên thread, consumer trên asyncio — đây là chỗ dễ sai nhất."""
+    """The source runs on a thread, the consumer on asyncio — the easiest place to
+    get wrong."""
     import threading
 
     bus = FrameBus()
@@ -100,7 +101,7 @@ def test_rate_tracks_frequency():
 
 
 # --------------------------------------------------------------------------
-# Nguồn tổng hợp
+# Synthetic source
 # --------------------------------------------------------------------------
 
 
@@ -111,13 +112,13 @@ async def test_synthetic_visible_shape_and_motion():
         first = await asyncio.wait_for(src.bus.next_frame(), 2)
         assert first.image.shape == (240, 320, 3)
         later = await asyncio.wait_for(src.bus.next_frame(after_seq=first.seq + 3), 2)
-        assert not np.array_equal(first.image, later.image), "khung phải thay đổi"
+        assert not np.array_equal(first.image, later.image), "the frame must change"
     finally:
         src.stop()
 
 
 async def test_synthetic_thermal_is_single_channel():
-    """Luồng nhiệt của C12 thật là ảnh xám — nguồn tổng hợp phải giống."""
+    """The real C12 thermal stream is grayscale — the synthetic one must match."""
     src = SyntheticSource("t", 384, 288, 50, kind="thermal")
     src.start(asyncio.get_running_loop())
     try:
@@ -157,20 +158,20 @@ async def test_source_survives_double_start():
 
 
 # --------------------------------------------------------------------------
-# Nguồn thật
+# Live source
 # --------------------------------------------------------------------------
 
 
 def test_gst_pipeline_has_the_anti_latency_flags():
-    """Thiếu drop=true max-buffers=1 thì độ trễ tăng dần tới mức vô dụng."""
+    """Without drop=true max-buffers=1 the latency grows until it is unusable."""
     p = gst_pipeline("rtsp://host:554/stream=1")
     assert "drop=true" in p and "max-buffers=1" in p
-    assert "rtph265depay" in p and "h265parse" in p, "codec là H.265, không phải H.264"
+    assert "rtph265depay" in p and "h265parse" in p, "the codec is H.265, not H.264"
     assert "avdec_h265" in p
 
 
 def test_gst_pipeline_decoder_is_swappable():
-    """Rubik Pi 3 / QCS6490 dùng v4l2h265dec để decode phần cứng."""
+    """The Rubik Pi 3 / QCS6490 uses v4l2h265dec for hardware decoding."""
     p = gst_pipeline("rtsp://h:554/s", decoder="v4l2h265dec")
     assert "v4l2h265dec" in p and "avdec_h265" not in p
 
@@ -181,7 +182,7 @@ def test_capture_source_picks_backend_from_uri():
 
 
 async def test_capture_source_reports_failure_without_hanging():
-    """Nguồn hỏng phải báo lỗi rồi thoát, không treo thread mãi."""
+    """A broken source must report the error and exit, not hang the thread forever."""
     src = CaptureSource("bad", "rtsp://127.0.0.1:1/nope", reconnect=False)
     src.start(asyncio.get_running_loop())
     try:
@@ -218,8 +219,8 @@ def test_black_hot_inverts():
 
 
 def test_unknown_colormap_falls_back_instead_of_raising():
-    """Giữa luồng video, hiển thị ảnh xám còn hơn ném lỗi."""
-    out = cmap.apply(img(c=None), "không-tồn-tại")
+    """Mid-stream, showing grayscale beats raising."""
+    out = cmap.apply(img(c=None), "does-not-exist")
     assert out.shape == (8, 8, 3)
 
 
@@ -228,11 +229,11 @@ def test_colormap_accepts_colour_input():
 
 
 def test_upscale_uses_nearest_and_keeps_values():
-    """INTER_NEAREST giữ pixel sắc nét — hợp nguồn 384×288."""
+    """INTER_NEAREST keeps pixels crisp — right for a 384×288 source."""
     src = np.array([[0, 255], [255, 0]], np.uint8)
     out = cmap.upscale(src, 4, 4)
     assert out.shape == (4, 4)
-    assert set(np.unique(out)) <= {0, 255}, "nội suy mượt sẽ tạo giá trị trung gian"
+    assert set(np.unique(out)) <= {0, 255}, "smooth interpolation would invent\n        intermediate values"
 
 
 def test_available_lists_palettes():
@@ -270,7 +271,7 @@ async def test_multipart_parts_are_well_formed(stream):
 
 
 async def test_encoder_only_runs_while_clients_watch(stream):
-    """Không ai xem thì không encode — 720p30 cho tab không ai nhìn là lãng phí."""
+    """No viewers, no encoding — 720p30 for a tab nobody watches is pure waste."""
     assert stream._encoder is None
     gen = stream.frames()
     await asyncio.wait_for(gen.__anext__(), 3)
@@ -279,11 +280,12 @@ async def test_encoder_only_runs_while_clients_watch(stream):
     await gen.aclose()
     await asyncio.sleep(0.05)
     assert stream.stats.clients == 0
-    assert stream._encoder is None, "encoder phải ngủ khi client cuối rời đi"
+    assert stream._encoder is None, "the encoder must sleep once the last client leaves"
 
 
 async def test_encoder_stops_when_client_disconnects_midstream(stream):
-    """Đóng tab giữa chừng: generator bị huỷ, encoder vẫn phải dọn."""
+    """Tab closed mid-stream: the generator is cancelled, the encoder must still
+    clean up."""
     gen = stream.frames()
     await asyncio.wait_for(gen.__anext__(), 3)
     task = asyncio.create_task(gen.__anext__())
@@ -296,7 +298,7 @@ async def test_encoder_stops_when_client_disconnects_midstream(stream):
 
 
 async def test_single_encode_shared_by_all_clients(stream):
-    """Ba client, một lần encode mỗi khung — không nhân CPU theo số người xem."""
+    """Three clients, one encode per frame — CPU must not scale with viewers."""
     gens = [stream.frames() for _ in range(3)]
     for g in gens:
         await asyncio.wait_for(g.__anext__(), 3)
@@ -307,8 +309,8 @@ async def test_single_encode_shared_by_all_clients(stream):
     produced = stream.stats.encoded - before
 
     payloads = await asyncio.gather(*(asyncio.wait_for(g.__anext__(), 3) for g in gens))
-    assert len({bytes(p) for p in payloads}) == 1, "mọi client phải nhận cùng bytes"
-    assert produced < 3 * 30, "encode nhân theo số client rồi"
+    assert len({bytes(p) for p in payloads}) == 1, "every client must get the same bytes"
+    assert produced < 3 * 30, "encoding is scaling with the number of clients"
 
     for g in gens:
         await g.aclose()
@@ -373,7 +375,7 @@ async def test_manager_synthetic_runs_both_streams():
 
 
 async def test_streams_are_independent_not_frame_synced():
-    """30 fps và 25 fps chạy độc lập — không đồng bộ khung giữa hai luồng."""
+    """30 fps and 25 fps run independently — no frame syncing between streams."""
     mgr = VideoManager.synthetic()
     mgr.start()
     try:
@@ -381,7 +383,7 @@ async def test_streams_are_independent_not_frame_synced():
         v = mgr.sources[VISIBLE].stats.frames
         t = mgr.sources[THERMAL].stats.frames
         assert v > 0 and t > 0
-        assert v != t, "hai luồng lệch nhịp thì số khung không thể bằng nhau"
+        assert v != t, "streams at different rates cannot have equal frame counts"
     finally:
         await mgr.close()
 
@@ -398,7 +400,7 @@ def test_live_manager_builds_correct_uris():
     mgr = VideoManager.live("10.0.0.5")
     assert mgr.sources[VISIBLE].uri == "rtsp://10.0.0.5:554/stream=1"
     assert mgr.sources[THERMAL].uri == "rtsp://10.0.0.5:555/stream=2"
-    assert not mgr.sources[VISIBLE].uses_gstreamer, "mặc định dùng FFMPEG của cv2"
+    assert not mgr.sources[VISIBLE].uses_gstreamer, "the default is cv2's FFMPEG"
 
 
 def test_live_manager_with_hardware_decoder():
@@ -409,7 +411,7 @@ def test_live_manager_with_hardware_decoder():
 
 
 def test_live_defaults_to_camera_side_palette():
-    """C12 tự tô màu qua IMG — colormap server chỉ là dự phòng."""
+    """The C12 colorizes itself via IMG — the server colormap is only a fallback."""
     assert VideoManager.live("10.0.0.5").streams[THERMAL].colormap is None
     assert VideoManager.live("10.0.0.5", colormap="ironbow"
                              ).streams[THERMAL].colormap == "ironbow"

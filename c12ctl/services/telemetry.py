@@ -1,16 +1,18 @@
-"""Tư thế gimbal thời gian thực qua ``GAA`` → ``GAC``.
+"""Real-time gimbal attitude via ``GAA`` → ``GAC``.
 
-``skydroid-c12-protocol.md`` kết luận "không có telemetry" và gắn nhãn
-``[VERIFIED]``. Đó là **âm tính giả**: luồng đẩy mặc định tắt, và chưa ai gửi
-``GAA`` để bật. Bytecode RCSDK cho thấy ``GAA`` bật push 0–100 Hz, sau đó camera
-tự đẩy gói ``GAC`` chứa yaw/pitch/roll.
+``skydroid-c12-protocol.md`` concludes "no telemetry" and marks it
+``[VERIFIED]``. That is a **false negative**: the push stream is off by default
+and nobody had sent ``GAA`` to turn it on. The RCSDK bytecode shows ``GAA``
+enables a 0–100 Hz push, after which the camera sends ``GAC`` frames carrying
+yaw/pitch/roll.
 
-Đây là thứ mở ra điều khiển vòng kín: HUD tư thế, giới hạn mềm theo góc thật,
-xác minh ``goto`` bằng số đo, preset vị trí đáng tin.
+This is what makes closed-loop control possible: an attitude HUD, soft limits
+based on the real angle, ``goto`` verified against a measurement, and position
+presets you can trust.
 
-Ràng buộc của hãng: ``GAA`` **chỉ hiệu lực sau khi camera đã ra hình**. Nên gửi
-lặp cho tới khi thấy gói ``GAC`` đầu tiên, đừng gửi một phát rồi kết luận là
-không hỗ trợ.
+Vendor constraint: ``GAA`` **only takes effect once the camera is producing
+video**. So keep sending it until the first ``GAC`` arrives; do not send it once
+and conclude the feature is missing.
 """
 
 from __future__ import annotations
@@ -30,14 +32,14 @@ log = logging.getLogger("c12ctl.telemetry")
 ATTITUDE_CMD = "GAC"
 DEFAULT_RATE_HZ = 10
 REARM_INTERVAL = 1.0
-"""Khoảng gửi lại GAA khi chưa thấy gói tư thế nào."""
+"""How often to resend GAA while no attitude frame has been seen."""
 
 STALE_AFTER = 1.0
-"""Quá khoảng này không có GAC thì coi tư thế là cũ, không dùng để chặn nữa."""
+"""With no GAC for this long the attitude is stale and no longer used to gate."""
 
 
 class TelemetryService:
-    """Bật luồng đẩy tư thế và giữ giá trị mới nhất."""
+    """Enable the attitude push stream and hold the latest value."""
 
     def __init__(self, link: UdpLink, *, rate_hz: int = DEFAULT_RATE_HZ,
                  rearm_interval: float = REARM_INTERVAL,
@@ -54,7 +56,7 @@ class TelemetryService:
         self._arm_task: asyncio.Task | None = None
         self._subscribers: list[Callable[[Attitude], None]] = []
 
-    # -------------------------------------------------------------- vòng đời
+    # ---------------------------------------------------------------- lifecycle
 
     async def start(self) -> None:
         self.link.subscribe(self._on_frame)
@@ -73,16 +75,16 @@ class TelemetryService:
             self.enabled = False
 
     async def _arm_loop(self) -> None:
-        """Gửi ``GAA`` cho tới khi thấy tư thế, rồi gửi lại nếu luồng đứt."""
+        """Send ``GAA`` until attitude appears, then resend if the stream drops."""
         while True:
             if not self.fresh:
                 self.link.send("telemetry.push_attitude", self.rate_hz)
                 if not self.enabled:
-                    log.info("gửi GAA %d Hz (camera phải đã ra hình mới nhận)",
+                    log.info("sent GAA %d Hz (the camera must already have video)",
                              self.rate_hz)
             await asyncio.sleep(self.rearm_interval)
 
-    # ------------------------------------------------------------------ nhận
+    # --------------------------------------------------------------- receiving
 
     def _on_frame(self, frame: Frame) -> None:
         if frame.cmd3 != ATTITUDE_CMD:
@@ -90,7 +92,7 @@ class TelemetryService:
         try:
             attitude = Attitude.from_data(frame.data)
         except ValueError:
-            log.warning("gói GAC méo: %r", frame.data)
+            log.warning("malformed GAC frame: %r", frame.data)
             return
 
         first = not self.enabled
@@ -99,13 +101,13 @@ class TelemetryService:
         self.packets += 1
         self.enabled = True
         if first:
-            log.info("có tư thế: %s", attitude)
+            log.info("attitude acquired: %s", attitude)
 
         for callback in list(self._subscribers):
             try:
                 callback(attitude)
             except Exception:  # pragma: no cover
-                log.exception("subscriber telemetry lỗi")
+                log.exception("telemetry subscriber failed")
 
     def subscribe(self, callback: Callable[[Attitude], None]) -> None:
         self._subscribers.append(callback)
@@ -114,18 +116,18 @@ class TelemetryService:
         with contextlib.suppress(ValueError):
             self._subscribers.remove(callback)
 
-    # ------------------------------------------------------------------ trạng thái
+    # ------------------------------------------------------------------- state
 
     @property
     def age(self) -> float | None:
-        """Giây kể từ gói tư thế cuối. ``None`` nếu chưa có gói nào."""
+        """Seconds since the last attitude frame. ``None`` if none has arrived."""
         if not self.updated_at:
             return None
         return time.monotonic() - self.updated_at
 
     @property
     def fresh(self) -> bool:
-        """Tư thế còn dùng được để ra quyết định an toàn không?"""
+        """Is the attitude still usable for safety decisions?"""
         age = self.age
         return age is not None and age < self.stale_after
 

@@ -1,12 +1,13 @@
-"""Ô "khung mới nhất" nối thread bắt hình với vòng lặp asyncio.
+"""A "latest frame" slot connecting the capture thread to the asyncio loop.
 
-Nguyên tắc quan trọng nhất của cả tầng video: **không hàng đợi**. Queue tích khung
-là tích độ trễ, mà độ trễ là thứ duy nhất đáng quan tâm ở một app điều khiển. Nếu
-consumer chậm hơn source, khung cũ bị **vứt** chứ không xếp hàng — người điều khiển
-gimbal cần khung *mới nhất*, không cần khung nào cũng phải xem.
+The most important rule in the whole video layer: **no queue**. A queue
+accumulates frames, and accumulated frames are accumulated latency — and latency
+is the only thing that matters in a control application. If the consumer is
+slower than the source, old frames are **dropped** rather than queued: someone
+flying a gimbal needs the *latest* frame, not every frame.
 
-Source chạy trên thread (``cv2.VideoCapture.read`` là blocking), consumer chạy trên
-asyncio. Bàn giao qua ``loop.call_soon_threadsafe``.
+The source runs on a thread (``cv2.VideoCapture.read`` is blocking), the consumer
+runs on asyncio. Hand-off happens through ``loop.call_soon_threadsafe``.
 """
 
 from __future__ import annotations
@@ -21,12 +22,13 @@ import numpy as np
 
 @dataclass(frozen=True)
 class Frame:
-    """Một khung ảnh kèm thời điểm bắt được."""
+    """One image frame plus the moment it was captured."""
 
     image: np.ndarray
     seq: int
     captured_at: float
-    """``time.monotonic()`` lúc khung rời khỏi decoder — gốc để đo độ trễ pipeline."""
+    """``time.monotonic()`` when the frame left the decoder — the reference point
+    for measuring pipeline latency."""
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -38,7 +40,7 @@ class Frame:
 
 
 class Rate:
-    """Đếm nhịp trung bình trượt. Rẻ, không cấp phát."""
+    """Rolling average rate counter. Cheap, allocation-free."""
 
     def __init__(self, alpha: float = 0.1) -> None:
         self.alpha = alpha
@@ -62,7 +64,7 @@ class Rate:
 
 
 class Average:
-    """Trung bình trượt cho các đại lượng đo bằng ms."""
+    """Rolling average for quantities measured in milliseconds."""
 
     def __init__(self, alpha: float = 0.1) -> None:
         self.alpha = alpha
@@ -84,7 +86,7 @@ class BusStats:
 
 
 class FrameBus:
-    """Một ô chứa đúng một khung — khung mới đè khung cũ."""
+    """A slot holding exactly one frame — a new frame overwrites the old one."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -94,13 +96,14 @@ class FrameBus:
         self.stats = BusStats()
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Gắn vòng lặp sẽ nhận thông báo. Gọi từ phía asyncio trước khi source chạy."""
+        """Attach the loop to notify. Call from the asyncio side before the
+        source starts."""
         self._loop = loop
 
-    # ------------------------------------------------------------ phía thread
+    # ------------------------------------------------------------ thread side
 
     def publish(self, image: np.ndarray, captured_at: float | None = None) -> Frame:
-        """Đăng một khung mới. Gọi từ thread bắt hình."""
+        """Publish a new frame. Called from the capture thread."""
         now = time.monotonic()
         with self._lock:
             seq = self.stats.published + 1
@@ -123,7 +126,7 @@ class FrameBus:
             if not fut.done():
                 fut.set_result(frame)
 
-    # ----------------------------------------------------------- phía asyncio
+    # ----------------------------------------------------------- asyncio side
 
     @property
     def latest(self) -> Frame | None:
@@ -132,10 +135,11 @@ class FrameBus:
 
     async def next_frame(self, after_seq: int = 0,
                          timeout: float | None = None) -> Frame | None:
-        """Chờ khung mới hơn ``after_seq``.
+        """Wait for a frame newer than ``after_seq``.
 
-        Trả ngay nếu đã có khung mới hơn — consumer chậm sẽ **nhảy cóc** tới khung
-        hiện tại thay vì lần lượt qua từng khung đã lỡ. Trả ``None`` khi timeout.
+        Returns immediately if a newer frame already exists — a slow consumer
+        **skips ahead** to the current frame instead of walking through every
+        frame it missed. Returns ``None`` on timeout.
         """
         loop = asyncio.get_running_loop()
         with self._lock:

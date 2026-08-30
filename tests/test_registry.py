@@ -1,7 +1,7 @@
-"""Bất biến của registry.
+"""Registry invariants.
 
-Đây là bộ test quan trọng nhất về mặt an toàn: nó khẳng định rằng không có lệnh
-nguy hiểm nào lọt được vào allowlist, kể cả do sửa nhầm sau này.
+Safety-wise this is the most important test module: it asserts that no dangerous
+command can reach the allowlist, including through a careless future edit.
 """
 
 import pytest
@@ -27,7 +27,7 @@ def test_no_dangerous_command_in_registry():
 
 
 def test_no_write_to_forbidden_command_word():
-    """IPV/GTW/VOM/IQE/RST/RTF/GAR/ZMC/FCC không được có lệnh ghi nào."""
+    """IPV/GTW/VOM/IQE/RST/RTF/GAR/ZMC/FCC must have no write command at all."""
     offenders = [
         c.name for c in COMMANDS.values() if c.rw == "w" and c.cmd3 in FORBIDDEN
     ]
@@ -35,7 +35,7 @@ def test_no_write_to_forbidden_command_word():
 
 
 def test_forbidden_words_are_still_readable():
-    """Đọc IPV/GTW/VOM/IQE an toàn và có ích — chỉ ghi mới nguy hiểm."""
+    """Reading IPV/GTW/VOM/IQE is safe and useful — only writing is dangerous."""
     for name in ("read.ip_address", "read.gateway", "read.video_config",
                  "read.image_quality"):
         assert COMMANDS[name].rw == "r"
@@ -48,7 +48,7 @@ def test_unknown_command_is_rejected():
 
 
 def test_every_frame_parses_and_verifies():
-    """Mọi lệnh không tham số phải dựng ra khung hợp lệ."""
+    """Every parameterless command must build a valid frame."""
     for cmd in COMMANDS.values():
         if cmd.encode is None:
             f = parse(cmd.frame())
@@ -60,11 +60,11 @@ def test_every_frame_parses_and_verifies():
 def test_read_commands_all_expect_reply():
     for cmd in reg.read_commands():
         assert cmd.rw == "r"
-        assert cmd.expect_reply, "%s là lệnh đọc mà không chờ phản hồi" % cmd.name
+        assert cmd.expect_reply, "%s is a read command that waits for no reply" % cmd.name
 
 
 # --------------------------------------------------------------------------
-# Khung sinh ra phải khớp literal đã kiểm chứng
+# Generated frames must match the verified literals
 # --------------------------------------------------------------------------
 
 
@@ -110,12 +110,12 @@ def test_encoded_frames_match_verified_literals(name, args, expected):
 
 
 # --------------------------------------------------------------------------
-# PTZ — dải nguy hiểm
+# PTZ — the dangerous range
 # --------------------------------------------------------------------------
 
 
 def test_akey_never_touches_calibration_range():
-    """PTZ 0C/0D khởi động hiệu chuẩn gimbal. Enum không được chạm tới."""
+    """PTZ 0C/0D starts a gimbal calibration. The enum must never touch it."""
     assert {k.value for k in AKey}.isdisjoint(FORBIDDEN_PTZ_DATA)
 
 
@@ -124,25 +124,25 @@ def test_calibration_values_are_in_forbidden_set():
 
 
 def test_akey_rejects_raw_hex():
-    """Chỉ nhận tên trong enum — không cho lách bằng chuỗi hex thô."""
+    """Only enum names are accepted — no sneaking past with a raw hex string."""
     with pytest.raises(KeyError):
         COMMANDS["gimbal.akey"].frame("0C")
 
 
 # --------------------------------------------------------------------------
-# Dừng khẩn
+# Emergency stop
 # --------------------------------------------------------------------------
 
 
 def test_stop_frames_are_precomputed_and_valid():
-    """Dựng sẵn để không phải tra registry đúng lúc đang cần dừng gấp."""
+    """Prebuilt so no registry lookup is needed at the moment a stop is urgent."""
     assert STOP_FRAMES == ("#TPUG2wGSY005F", "#TPUG2wGSP0056")
     for f in STOP_FRAMES:
         parse(f)
 
 
 # --------------------------------------------------------------------------
-# Phân loại rủi ro
+# Risk classification
 # --------------------------------------------------------------------------
 
 
@@ -159,7 +159,7 @@ def test_camera_writes_are_reversible():
 
 
 def test_telemetry_enable_is_not_physical():
-    """GAA bật luồng đẩy, không gây chuyển động."""
+    """GAA enables the push stream; it causes no motion."""
     assert COMMANDS["telemetry.push_attitude"].risk is RiskLevel.REVERSIBLE
 
 
@@ -170,9 +170,10 @@ def test_all_reads_are_safe():
 
 
 def test_palette_command_is_img_not_tar():
-    """Hồi quy cho sai lầm nguy hiểm nhất trong skydroid-c12-protocol.md.
+    """Regression for the most dangerous mistake in skydroid-c12-protocol.md.
 
-    TAR là khử nhiễu không gian. Nếu ai đó đổi palette sang TAR, test này chết.
+    TAR is spatial noise reduction. If anyone moves the palette onto TAR, this
+    test dies.
     """
     assert COMMANDS["camera.palette"].cmd3 == "IMG"
     assert COMMANDS["camera.thermal_spatial_nr"].cmd3 == "TAR"
@@ -180,7 +181,8 @@ def test_palette_command_is_img_not_tar():
 
 
 def test_zoom_targets_camera_not_lens_motor():
-    """C12 là zoom số qua DZM (đích D). ZMC/FCC là của model có ống kính cơ."""
+    """The C12 zooms digitally via DZM (destination D). ZMC/FCC belong to
+    mechanical-lens models."""
     cmd = COMMANDS["camera.zoom_in"]
     assert cmd.cmd3 == "DZM"
     assert cmd.dest.value == "D"

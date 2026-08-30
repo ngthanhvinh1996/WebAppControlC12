@@ -1,19 +1,19 @@
-"""Camera C12 giả lập trên UDP.
+"""A simulated C12 camera over UDP.
 
-Không phải đồ chơi: đây là điều kiện cần để pha 0 tồn tại (máy dev chưa nối được
-camera), và về lâu dài là cách duy nhất test các đường an toàn mà không phải rút
-cáp thật hàng chục lần.
+Not a toy: it is the precondition for phase 0 existing at all (the dev machine
+had no camera to connect), and in the long run it is the only way to test the
+safety paths without physically unplugging a cable dozens of times.
 
-Simulator mô hình hoá:
+The simulator models:
 
-* bảng lệnh đọc/ghi theo đúng bytecode,
-* gimbal tích phân tốc độ ở 50 Hz, có giới hạn cơ khí,
-* luồng đẩy ``GAC`` khi được bật bằng ``GAA``,
-* **cả hai hành vi keepalive** — xem ``--hold-speed``.
+* the read/write command table exactly as the bytecode describes it,
+* a gimbal integrating speed at 50 Hz, with mechanical limits,
+* the ``GAC`` push stream once ``GAA`` enables it,
+* **both keepalive behaviours** — see ``--hold-speed``.
 
-Điểm cuối cùng quan trọng: hai tài liệu nguồn mâu thuẫn về việc gimbal có tự dừng
-khi ngừng nhận gói hay không, và ta không phân xử được từ tài liệu. Nên simulator
-chạy được cả hai kiểu, và vòng điều khiển phải đúng trong cả hai.
+That last point matters: the two source documents disagree on whether the gimbal
+stops on its own when packets stop arriving, and the documents cannot settle it.
+So the simulator can run either way, and the control loop must be correct in both.
 
     python -m c12ctl.sim.c12_sim --port 5000
     python -m c12ctl.sim.c12_sim --chaos-loss 0.3 --hold-speed
@@ -42,18 +42,18 @@ from ..protocol.types import (
 log = logging.getLogger("c12ctl.sim")
 
 TICK = 0.02
-"""Chu kỳ mô phỏng, giây. 50 Hz — mịn hơn nhịp điều khiển 20 Hz."""
+"""Simulation period, in seconds. 50 Hz — finer than the 20 Hz control rate."""
 
 SPEED_HOLD_TIMEOUT = 0.15
-"""Không nhận gói tốc độ mới trong khoảng này thì gimbal tự dừng
-(chỉ áp dụng khi ``hold_speed`` là False)."""
+"""With no new speed packet within this window the gimbal stops on its own
+(only when ``hold_speed`` is False)."""
 
 YAW_LIMIT_DEG = 90.0
 PITCH_LIMIT_DEG = 90.0
 
 
 class CameraState:
-    """Trạng thái camera giả lập."""
+    """State of the simulated camera."""
 
     def __init__(self) -> None:
         self.version = "1.9.2"
@@ -68,14 +68,15 @@ class CameraState:
         self.sd_free_mb = 18122
         self.photos = 0
         self.photo_mb = 2
-        """CAP không có lệnh đọc tương ứng. Bằng chứng gián tiếp duy nhất là
-        dung lượng thẻ giảm, nên simulator phải mô hình hoá cả chỗ đó — nếu
-        không thì đường xác nhận của pha 3 không test được."""
-        # TSM (scene mode) cố ý KHÔNG có mặt: skydroid-c12-protocol.md §5 ngờ đây
-        # là tính năng của C13 chứ không phải C12, và registry cũng không có lệnh
-        # ghi cho nó. Simulator mô hình hoá kỳ vọng đó bằng cách im lặng — nếu
-        # phần cứng thật trả lời TSM, findings sẽ đánh dấu BẤT NGỜ và ta biết
-        # ngay là kỳ vọng sai.
+        """CAP has no corresponding read command. The only indirect evidence is
+        the card's free space dropping, so the simulator has to model that too —
+        otherwise phase 3's verification path could not be tested."""
+        # TSM (scene mode) is deliberately absent: skydroid-c12-protocol.md §5
+        # suspects it is a C13 feature rather than a C12 one, and the registry
+        # has no write command for it either. The simulator models that
+        # expectation by staying silent — if real hardware does answer TSM, the
+        # findings report flags it as a SURPRISE and we learn the expectation
+        # was wrong.
         self.thermal = {
             "TAR": 50, "TAS": 30, "TDI": 50, "TGM": 50,
             "TIB": 50, "TIC": 50, "TTR": 50,
@@ -92,7 +93,8 @@ class CameraState:
 
         self.gaa_rate = 0
         self.has_video = True
-        """GAA chỉ hiệu lực sau khi camera ra hình — mô phỏng luôn ràng buộc đó."""
+        """GAA only takes effect once the camera has video — the simulator models
+        that constraint too."""
 
 
 class C12Simulator:
@@ -133,7 +135,7 @@ class C12Simulator:
         )
         self._tasks.append(asyncio.create_task(self._tick_loop(), name="sim-tick"))
         log.info(
-            "C12 giả lập trên %s:%d (hold_speed=%s, GSM=%s)",
+            "simulated C12 on %s:%d (hold_speed=%s, GSM=%s)",
             host, port, self.hold_speed, self.supports_gsm,
         )
 
@@ -149,7 +151,7 @@ class C12Simulator:
     def port(self) -> int:
         return self.transport.get_extra_info("sockname")[1]
 
-    # ------------------------------------------------------------------ nhận
+    # -------------------------------------------------------------- receiving
 
     def on_datagram(self, data: bytes, addr) -> None:
         self._peers.add(addr)
@@ -157,18 +159,19 @@ class C12Simulator:
 
         if self.chaos_loss and self.rng.random() < self.chaos_loss:
             self.dropped += 1
-            log.debug("chaos: bỏ gói đến %r", text.strip())
+            log.debug("chaos: dropped inbound %r", text.strip())
             return
 
         frames = split_frames(text)
         if not frames:
-            # Phân biệt "rác thật" với "checksum sai" để chaos test đọc được.
+            # Tell real garbage apart from a bad checksum so the chaos tests can
+            # read the difference.
             try:
                 parse(text, verify=False)
                 self.bad_checksum += 1
             except FrameError:
                 pass
-            log.debug("gói không tách được khung: %r", text.strip())
+            log.debug("no frame could be split out of: %r", text.strip())
             return
 
         for frame in frames:
@@ -178,7 +181,7 @@ class C12Simulator:
                 self._send(reply, addr)
 
     def handle(self, frame) -> str | None:
-        """Xử lý một khung, trả về khung phản hồi hoặc ``None``."""
+        """Handle one frame, returning a reply frame or ``None``."""
         st = self.state
         cmd, data, rw = frame.cmd3, frame.data, frame.rw
 
@@ -190,11 +193,11 @@ class C12Simulator:
             if st.sd_total_mb:
                 st.photos += 1
                 st.sd_free_mb = max(0, st.sd_free_mb - st.photo_mb)
-            log.info("sim: chụp ảnh (%d tấm, còn %d MB)", st.photos, st.sd_free_mb)
+            log.info("sim: photo taken (%d total, %d MB free)", st.photos, st.sd_free_mb)
             return None
         if cmd == "REC":
             st.recording = data == "01" if data in ("00", "01") else not st.recording
-            log.info("sim: ghi hình = %s", st.recording)
+            log.info("sim: recording = %s", st.recording)
             return None
         if cmd == "DZM":
             if data == "0A":
@@ -228,7 +231,7 @@ class C12Simulator:
             return None
         if cmd == "GSM":
             if not self.supports_gsm:
-                log.debug("sim: GSM không hỗ trợ (firmware gimbal < 0.5)")
+                log.debug("sim: GSM unsupported (gimbal firmware < 0.5)")
                 return None
             st.yaw_speed = raw_to_speed(_s8(data[0:2]))
             st.pitch_speed = raw_to_speed(_s8(data[2:4]))
@@ -254,14 +257,15 @@ class C12Simulator:
         if cmd == "GAA":
             rate = parse_u8(data)
             if not st.has_video and rate:
-                log.info("sim: bỏ qua GAA — camera chưa ra hình")
+                log.info("sim: ignoring GAA — the camera has no video yet")
                 return None
             st.gaa_rate = rate
-            log.info("sim: đẩy tư thế %d Hz", rate)
+            log.info("sim: pushing attitude at %d Hz", rate)
             return None
 
         self.unknown.append(frame.raw)
-        log.info("sim: lệnh không hỗ trợ %s — im lặng (đúng như phần cứng thật)", cmd)
+        log.info("sim: unsupported command %s — staying silent (like real hardware)",
+                 cmd)
         return None
 
     def _handle_ptz(self, data: str) -> None:
@@ -277,8 +281,8 @@ class C12Simulator:
         elif data == "05":
             st.goto_yaw = st.goto_pitch = 0.0
         else:
-            log.warning("sim: PTZ %s — dải nguy hiểm, phần cứng thật có thể "
-                        "khởi động hiệu chuẩn", data)
+            log.warning("sim: PTZ %s — dangerous range, real hardware might start "
+                        "a calibration", data)
             return
         st.yaw_speed = st.pitch_speed = 0.0
 
@@ -297,10 +301,10 @@ class C12Simulator:
         if cmd in st.thermal:
             table[cmd] = u8_hex(st.thermal[cmd])
         if cmd == "SDC":
-            # 6 hex mỗi giá trị = 12 ký tự. KHÔNG dùng 8+8: trường length chỉ có
-            # 1 ký tự hex nên data tối đa là 15 ký tự — ràng buộc này loại luôn
-            # mọi format 2×32-bit. Format thật chưa xác minh; pha 1 ghi chuỗi
-            # thô để chốt.
+            # 6 hex characters per value = 12 total. NOT 8+8: the length field is
+            # a single hex character so data is at most 15 characters — that
+            # constraint rules out every 2×32-bit format. The real format is
+            # unverified; phase 1 records the raw string to settle it.
             payload = "%06X%06X" % (
                 min(st.sd_total_mb, 0xFFFFFF),
                 min(st.sd_free_mb, 0xFFFFFF),
@@ -309,17 +313,17 @@ class C12Simulator:
         if cmd in table:
             return self._reply(cmd, table[cmd])
 
-        # Lệnh camera không hỗ trợ thì IM LẶNG. Chính sự im lặng đó là dữ liệu
-        # mà trang Diagnostics của pha 1 cần thu thập.
+        # An unsupported camera command stays SILENT. That silence is exactly the
+        # data phase 1's Diagnostics page needs to collect.
         self.unknown.append(cmd)
-        log.debug("sim: đọc %s không hỗ trợ — im lặng", cmd)
+        log.debug("sim: read %s unsupported — staying silent", cmd)
         return None
 
     def _reply(self, cmd3: str, data: str) -> str:
-        """Camera trả về với src/dest đảo: #TPDU..."""
+        """The camera replies with src/dest swapped: #TPDU..."""
         return build("U", "r", cmd3, data, src="D")
 
-    # -------------------------------------------------------------- mô phỏng
+    # ---------------------------------------------------------------- physics
 
     async def _tick_loop(self) -> None:
         last = time.monotonic()
@@ -334,11 +338,11 @@ class C12Simulator:
     def _integrate(self, dt: float, now: float) -> None:
         st = self.state
 
-        # Hành vi keepalive — điểm hai tài liệu mâu thuẫn.
+        # Keepalive behaviour — the point where the two documents disagree.
         if not self.hold_speed and (st.yaw_speed or st.pitch_speed):
             if now - st.last_speed_cmd > SPEED_HOLD_TIMEOUT:
                 st.yaw_speed = st.pitch_speed = 0.0
-                log.debug("sim: hết keepalive, gimbal tự dừng")
+                log.debug("sim: keepalive expired, gimbal stopped itself")
 
         if st.goto_yaw is not None:
             st.yaw = _approach(st.yaw, st.goto_yaw, 60.0 * dt)
@@ -377,7 +381,7 @@ class C12Simulator:
     def attitude(self) -> Attitude:
         return Attitude(self.state.yaw, self.state.pitch, self.state.roll)
 
-    # -------------------------------------------------------------------- gửi
+    # ----------------------------------------------------------------- sending
 
     def _send(self, frame: str, addr) -> None:
         if self.transport is None:
@@ -387,7 +391,7 @@ class C12Simulator:
             return
         payload = to_wire(frame)
         if self.chaos_garbage and self.rng.random() < self.chaos_garbage:
-            payload = b"\x00\xffrac" + payload
+            payload = b"\x00\xffjunk" + payload
         if self.chaos_delay:
             delay = self.rng.uniform(0, self.chaos_delay)
             asyncio.get_running_loop().call_later(
@@ -411,7 +415,7 @@ class _SimProtocol(asyncio.DatagramProtocol):
 
 
 def _s8(text: str) -> int:
-    """2 ký tự hex → int8 có dấu."""
+    """2 hex characters → signed int8."""
     raw = int(text, 16)
     return raw - 0x100 if raw >= 0x80 else raw
 
@@ -455,17 +459,17 @@ def main() -> None:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=5000)
     ap.add_argument("--hold-speed", action="store_true",
-                    help="gimbal giữ lệnh tốc độ tới khi có lệnh mới "
-                         "(mặc định: tự dừng sau %.0f ms không nhận gói)"
-                         % (SPEED_HOLD_TIMEOUT * 1000))
+                    help="the gimbal holds the last speed command until a new "
+                         "one arrives (default: stops on its own after %.0f ms "
+                         "with no packet)" % (SPEED_HOLD_TIMEOUT * 1000))
     ap.add_argument("--no-gsm", action="store_true",
-                    help="giả lập firmware gimbal < 0.5, không hỗ trợ GSM")
+                    help="simulate gimbal firmware < 0.5, which lacks GSM")
     ap.add_argument("--chaos-loss", type=float, default=0.0, metavar="P",
-                    help="xác suất bỏ mỗi gói, 0..1")
+                    help="probability of dropping each packet, 0..1")
     ap.add_argument("--chaos-delay", type=float, default=0.0, metavar="SEC",
-                    help="trễ phản hồi ngẫu nhiên tới SEC giây")
+                    help="delay replies randomly by up to SEC seconds")
     ap.add_argument("--chaos-garbage", type=float, default=0.0, metavar="P",
-                    help="xác suất chèn byte rác trước phản hồi")
+                    help="probability of prefixing a reply with junk bytes")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()

@@ -1,17 +1,18 @@
-"""Web app: registry → API → UI, với **cổng rủi ro cưỡng chế ở server**.
+"""Web app: registry → API → UI, with the **risk gate enforced on the server**.
 
-Lệnh 🟠 PHYSICAL bị từ chối ở tầng service khi phiên chưa ARM, không phụ thuộc
-frontend có gọi hay không. Đó là bất biến có từ pha 0 và vẫn đúng tới giờ.
+🟠 PHYSICAL commands are refused in the service layer while the session is not
+armed, regardless of whether the frontend ever calls them. That invariant dates
+from phase 0 and still holds.
 
-Bốn nhóm endpoint, mỗi nhóm bật tắt độc lập được:
+Four endpoint groups, each independently switchable:
 
-* ``/api/diagnostics/*`` — preflight và bản đồ năng lực (pha 1)
-* ``/video/*`` — MJPEG hai luồng (pha 2)
-* ``/api/camera/*`` — lệnh ghi camera **kèm bước đọc lại xác nhận** (pha 3)
-* ``/ws/control`` + ``/api/gimbal`` — vòng 20 Hz và telemetry (pha 4–5)
+* ``/api/diagnostics/*`` — preflight and the capability map (phase 1)
+* ``/video/*`` — two MJPEG streams (phase 2)
+* ``/api/camera/*`` — camera writes **with a read-back confirmation** (phase 3)
+* ``/ws/control`` + ``/api/gimbal`` — the 20 Hz loop and telemetry (phases 4–5)
 
     python -m c12ctl.web.app --dry-run
-    python -m c12ctl.web.app --host 127.0.0.1 --port 5000   # trỏ vào simulator
+    python -m c12ctl.web.app --host 127.0.0.1 --port 5000   # point at the simulator
 """
 
 from __future__ import annotations
@@ -46,10 +47,10 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 
 class CommandRequest(BaseModel):
-    """Body của ``POST /api/cmd/{name}``.
+    """Body of ``POST /api/cmd/{name}``.
 
-    Tham số đi trong một model chứ không phải một ``list`` trần: FastAPI hiểu
-    ``list`` trần là form data và đòi ``python-multipart``.
+    Parameters travel inside a model rather than a bare ``list``: FastAPI reads a
+    bare ``list`` as form data and then demands ``python-multipart``.
     """
 
     args: list = Field(default_factory=list)
@@ -64,27 +65,28 @@ class MaxSpeedRequest(BaseModel):
 
 
 class CameraRequest(BaseModel):
-    """Body của ``POST /api/camera/{action}``."""
+    """Body of ``POST /api/camera/{action}``."""
 
     args: list = Field(default_factory=list)
 
 
 class Session:
-    """Trạng thái phiên. Ở pha 0 chỉ có cờ ARM; pha 5 sẽ gắn watchdog vào đây."""
+    """Session state. In phase 0 this was only the ARM flag; phase 5 attached the
+    watchdog to it."""
 
     def __init__(self, max_speed: float = 10.0) -> None:
         self.armed = False
         self.max_speed = max_speed
 
     def check(self, cmd) -> None:
-        """Cổng rủi ro. Ném :class:`PermissionError` nếu không được phép."""
-        if cmd.risk is RiskLevel.DANGEROUS:  # pragma: no cover - registry đã chặn
-            raise PermissionError("%s ở mức DANGEROUS" % cmd.name)
+        """The risk gate. Raises :class:`PermissionError` when not allowed."""
+        if cmd.risk is RiskLevel.DANGEROUS:  # pragma: no cover - registry blocks this
+            raise PermissionError("%s is DANGEROUS" % cmd.name)
         if cmd.risk is RiskLevel.PHYSICAL and not self.armed:
             raise PermissionError(
-                "%s gây chuyển động cơ khí và phiên chưa ARM. "
-                "POST /api/arm trước, và đảm bảo không gian quanh gimbal trống."
-                % cmd.name
+                "%s causes mechanical motion and the session is not armed. "
+                "ARM it with POST /api/arm first, and make sure the space around "
+                "the gimbal is clear." % cmd.name
             )
 
 
@@ -107,7 +109,8 @@ def create_app(link: UdpLink, session: Session,
 
     @app.get("/api/commands")
     async def list_commands():
-        """Registry lộ ra cho UI. Frontend không tự bịa lệnh nào ngoài danh sách này."""
+        """The registry exposed to the UI. The frontend invents no command
+        outside this list."""
         return {
             "commands": [
                 {
@@ -142,10 +145,11 @@ def create_app(link: UdpLink, session: Session,
 
     @app.post("/api/diagnostics/sweep")
     async def sweep(timeout: float = 0.4, save: bool = True):
-        """Gọi toàn bộ lệnh 🟢 SAFE, ghi lệnh nào trả lời.
+        """Call every 🟢 SAFE command and record which ones answer.
 
-        Đây là bản đồ năng lực của pha 1: lệnh camera không hỗ trợ sẽ **im lặng**,
-        và im lặng chính là dữ liệu. Không rủi ro — toàn bộ nhóm này là read-only.
+        This is phase 1's capability map: a command the camera does not support
+        stays **silent**, and that silence is the data. No risk — the whole group
+        is read-only.
         """
         report = await findings.sweep(link, timeout=timeout)
         body = report.as_dict()
@@ -157,7 +161,7 @@ def create_app(link: UdpLink, session: Session,
 
     @app.get("/api/diagnostics/preflight")
     async def preflight_check():
-        """Chẩn đoán tầng dưới giao thức: cáp, IP, cổng, ping, RTSP."""
+        """Diagnose the layers below the protocol: cable, IP, port, ping, RTSP."""
         pre = await preflight.run(
             link.addr[0], control_port=link.local_port, check_rtsp=True
         )
@@ -170,7 +174,7 @@ def create_app(link: UdpLink, session: Session,
         session.armed = True
         if app.state.gimbal is not None:
             app.state.gimbal.arm()
-        log.warning("phiên ARM — lệnh gây chuyển động đã được mở")
+        log.warning("session ARMED — motion commands are now open")
         return {"armed": True}
 
     @app.post("/api/disarm")
@@ -179,8 +183,8 @@ def create_app(link: UdpLink, session: Session,
         return {"armed": False}
 
     @app.post("/api/stop")
-    async def stop(reason: str = "nút STOP"):
-        """Dừng khẩn. Một đường duy nhất, gọi được từ mọi ngả."""
+    async def stop(reason: str = "STOP button"):
+        """Emergency stop. One single path, callable from anywhere."""
         session.armed = False
         if app.state.gimbal is not None:
             app.state.gimbal.stop_all(reason)
@@ -195,7 +199,7 @@ def create_app(link: UdpLink, session: Session,
 
     def _gimbal() -> GimbalController:
         if app.state.gimbal is None:
-            raise HTTPException(status_code=503, detail="điều khiển gimbal chưa bật")
+            raise HTTPException(status_code=503, detail="gimbal control is disabled")
         return app.state.gimbal
 
     @app.get("/api/gimbal")
@@ -212,15 +216,15 @@ def create_app(link: UdpLink, session: Session,
 
     @app.websocket("/ws/control")
     async def ws_control(ws: WebSocket):
-        """Trình duyệt báo trạng thái; backend giữ nhịp 20 Hz.
+        """The browser reports state; the backend keeps the 20 Hz cadence.
 
-        Đóng kết nối — dù chủ động hay do rớt mạng, đóng tab, browser crash —
-        là ngả thứ ba của đường dừng khẩn.
+        Closing the connection — deliberately, or through a dropped network, a
+        closed tab, or a browser crash — is path three of the emergency stop.
         """
         await ws.accept()
         ctrl = app.state.gimbal
         if ctrl is None:
-            await ws.send_json({"type": "error", "detail": "gimbal chưa bật"})
+            await ws.send_json({"type": "error", "detail": "gimbal is disabled"})
             await ws.close()
             return
 
@@ -244,8 +248,9 @@ def create_app(link: UdpLink, session: Session,
                     await ws.send_json({"type": "state", **state.as_dict()})
 
                 elif kind == "ping":
-                    # Nhịp tim: làm mới watchdog mà không đổi trạng thái. Cần vì
-                    # giữ phím 3 giây là 3 giây không có message state nào.
+                    # Heartbeat: refresh the watchdog without changing state.
+                    # Needed because holding a key for 3 seconds means 3 seconds
+                    # with no state message at all.
                     ctrl.heartbeat()
 
                 elif kind == "arm":
@@ -255,61 +260,67 @@ def create_app(link: UdpLink, session: Session,
 
                 elif kind in ("disarm", "stop"):
                     session.armed = False
-                    ctrl.stop_all("yêu cầu qua WS" if kind == "stop" else "disarm")
+                    ctrl.stop_all("requested over WebSocket" if kind == "stop"
+                                  else "disarm")
                     await ws.send_json({"type": "armed", "armed": False})
 
                 else:
                     await ws.send_json({"type": "error",
-                                        "detail": "loại message lạ: %r" % kind})
+                                        "detail": "unknown message type: %r" % kind})
         except WebSocketDisconnect:
             pass
-        except Exception as exc:  # noqa: BLE001 - lỗi gì cũng phải dừng gimbal
-            log.warning("WS điều khiển lỗi: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - any error must stop the gimbal
+            log.warning("control WebSocket failed: %s", exc)
         finally:
             pusher.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await pusher
             session.armed = False
-            ctrl.stop_all("WebSocket đóng")
+            ctrl.stop_all("WebSocket closed")
 
     async def _push_status(ws: WebSocket, ctrl: GimbalController) -> None:
-        """Đẩy trạng thái + tư thế lên UI ở nhịp thấp, tách khỏi vòng 20 Hz."""
+        """Push state and attitude to the UI at a low rate, separate from the
+        20 Hz loop."""
         try:
             while True:
                 await asyncio.sleep(0.1)
                 await ws.send_json({"type": "status", **ctrl.as_dict()})
         except (asyncio.CancelledError, WebSocketDisconnect):
             raise
-        except Exception:  # pragma: no cover - client đã đi
+        except Exception:  # pragma: no cover - the client is already gone
             return
 
     # ---------------------------------------------------------------- camera
 
     def _camera() -> CameraService:
         if app.state.camera is None:
-            raise HTTPException(status_code=503, detail="đệm trạng thái camera chưa bật")
+            raise HTTPException(status_code=503,
+                                detail="the camera state cache is disabled")
         return app.state.camera
 
     @app.get("/api/camera")
     async def camera_state():
-        """Giá trị camera **đang thật sự dùng**, không phải thứ UI vừa gửi."""
+        """The values the camera is **actually using**, not what the UI just sent."""
         if app.state.camera is None:
             return {"enabled": False}
         return {"enabled": True, **app.state.camera.as_dict()}
 
     @app.post("/api/camera/refresh")
     async def camera_refresh(force: bool = False):
-        """Đọc ngay thay vì chờ tới nhịp poll. ``force`` đọc cả trường đã im lặng."""
+        """Read now instead of waiting for the poll cycle. ``force`` also reads
+        fields that have gone silent."""
         svc = _camera()
         await svc.poll_once(force=force)
         return svc.as_dict()
 
     @app.post("/api/camera/{action}")
     async def camera_apply(action: str, body: CameraRequest | None = None):
-        """Ghi rồi **đọc lại**. Trả về thứ camera trả lời, kèm ba trạng thái xác nhận.
+        """Write, then **read back**. Returns what the camera answered, with a
+        three-state confirmation.
 
-        ``ok`` là ``true`` / ``false`` / ``null``: null nghĩa là *không xác nhận
-        được* (lệnh đọc im lặng, chưa cắm thẻ), khác hẳn với "sai".
+        ``ok`` is ``true`` / ``false`` / ``null``: null means *could not be
+        verified* (silent read, no card inserted), which is very different from
+        "wrong".
         """
         svc = _camera()
         args = list(body.args) if body is not None else []
@@ -319,7 +330,7 @@ def create_app(link: UdpLink, session: Session,
             raise HTTPException(status_code=404, detail=str(exc)) from None
         try:
             session.check(cmd)
-        except PermissionError as exc:  # pragma: no cover - nhóm camera là REVERSIBLE
+        except PermissionError as exc:  # pragma: no cover - camera group is REVERSIBLE
             raise HTTPException(status_code=403, detail=str(exc)) from None
         try:
             result = await svc.apply(action, *args)
@@ -329,7 +340,7 @@ def create_app(link: UdpLink, session: Session,
             raise HTTPException(status_code=400, detail=str(exc)) from None
         return result.as_dict()
 
-    # ----------------------------------------------------------------- lệnh
+    # --------------------------------------------------------------- commands
 
     @app.post("/api/cmd/{name}")
     async def run_command(name: str, body: CommandRequest | None = None):
@@ -357,12 +368,12 @@ def create_app(link: UdpLink, session: Session,
 
     def _video() -> VideoManager:
         if app.state.video is None:
-            raise HTTPException(status_code=503, detail="video chưa bật")
+            raise HTTPException(status_code=503, detail="video is disabled")
         return app.state.video
 
     @app.get("/video/{name}")
     async def video_stream(name: str):
-        """MJPEG. Encode một lần cho mọi client; encoder ngủ khi hết người xem."""
+        """MJPEG. Encoded once for all clients; the encoder sleeps with no viewers."""
         try:
             stream = _video().get(name)
         except KeyError as exc:
@@ -382,7 +393,7 @@ def create_app(link: UdpLink, session: Session,
             raise HTTPException(status_code=404, detail=str(exc)) from None
         data = await stream.snapshot()
         if data is None:
-            raise HTTPException(status_code=503, detail="chưa có khung nào")
+            raise HTTPException(status_code=503, detail="no frame available yet")
         return Response(content=data, media_type="image/jpeg",
                         headers={"Cache-Control": "no-store"})
 
@@ -395,7 +406,7 @@ def create_app(link: UdpLink, session: Session,
 
     @app.post("/api/video/{name}/colormap")
     async def set_colormap(name: str, body: ColormapRequest):
-        """Tô màu phía server — DỰ PHÒNG. C12 tự tô được qua lệnh IMG."""
+        """Server-side colorization — a FALLBACK. The C12 can colorize itself via IMG."""
         try:
             stream = _video().get(name)
         except KeyError as exc:
@@ -404,13 +415,13 @@ def create_app(link: UdpLink, session: Session,
         if value not in (None, "") and value not in cmap.available():
             raise HTTPException(
                 status_code=400,
-                detail="colormap %r không có. Có: %s"
+                detail="no colormap named %r. Available: %s"
                        % (value, ", ".join(cmap.available())),
             )
         stream.colormap = value or None
         return {"name": name, "colormap": stream.colormap}
 
-    # ------------------------------------------------------------------ tĩnh
+    # ----------------------------------------------------------------- static
 
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -436,48 +447,51 @@ def _jsonable(value):
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--host", default=DEFAULT_HOST, help="IP camera")
+    ap.add_argument("--host", default=DEFAULT_HOST, help="camera IP")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--local-port", type=int, default=DEFAULT_PORT,
-                    help="cổng UDP local. Dùng 0 nếu cổng 5000 đang bị chiếm")
-    ap.add_argument("--bind", default="127.0.0.1", help="địa chỉ nghe HTTP")
+                    help="local UDP port. Use 0 if port 5000 is already taken")
+    ap.add_argument("--bind", default="127.0.0.1", help="HTTP listen address")
     ap.add_argument("--http-port", type=int, default=8000)
     ap.add_argument("--dry-run", action="store_true",
-                    help="in gói ra log thay vì gửi UDP")
+                    help="log packets instead of sending them over UDP")
     ap.add_argument("--max-speed", type=float, default=10.0,
-                    help="giới hạn tốc độ gimbal °/s. Mặc định thấp có chủ ý — "
-                         "chỉ nâng sau khi đã thấy vòng điều khiển dừng đúng")
+                    help="gimbal speed limit in °/s. The low default is "
+                         "deliberate — raise it only after watching the control "
+                         "loop stop correctly")
     ap.add_argument("--packet-log", default=None, metavar="PATH",
-                    help="ghi mọi gói TX/RX ra file JSONL")
+                    help="write every TX/RX packet to a JSONL file")
     ap.add_argument("--findings", default="logs/findings.jsonl", metavar="PATH",
-                    help="nơi trang Diagnostics ghi bản đồ năng lực")
+                    help="where the Diagnostics page writes the capability map")
     ap.add_argument("--video", choices=("live", "synthetic", "off"),
                     default="live",
-                    help="nguồn video. 'synthetic' không cần camera — dùng để "
-                         "phát triển và đo pipeline khi chưa có phần cứng")
+                    help="video source. 'synthetic' needs no camera — use it to "
+                         "develop and measure the pipeline before the hardware "
+                         "exists")
     ap.add_argument("--decoder", default=None, metavar="ELEMENT",
-                    help="phần tử GStreamer để decode: avdec_h265 (máy dev) hoặc "
-                         "v4l2h265dec (Rubik Pi 3, decode phần cứng). Bỏ trống "
-                         "thì dùng backend FFMPEG của cv2")
+                    help="GStreamer element to decode with: avdec_h265 (dev "
+                         "machine) or v4l2h265dec (Rubik Pi 3, hardware). Leave "
+                         "empty to use cv2's FFMPEG backend")
     ap.add_argument("--colormap", default=None, metavar="NAME",
-                    help="tô màu ảnh nhiệt phía server. DỰ PHÒNG — C12 tự tô "
-                         "được qua lệnh IMG")
+                    help="colorize thermal server-side. FALLBACK — the C12 can "
+                         "colorize itself via the IMG command")
     ap.add_argument("--max-video-fps", type=float, default=None, metavar="FPS",
-                    help="chặn trần nhịp encode MJPEG")
+                    help="cap the MJPEG encode rate")
     ap.add_argument("--no-gimbal", action="store_true",
-                    help="không bật vòng điều khiển gimbal")
+                    help="do not start the gimbal control loop")
     ap.add_argument("--no-telemetry", action="store_true",
-                    help="không bật luồng đẩy tư thế (GAA/GAC)")
+                    help="do not enable the attitude push stream (GAA/GAC)")
     ap.add_argument("--no-camera", action="store_true",
-                    help="không bật đệm trạng thái camera (tab Camera sẽ tắt)")
+                    help="do not start the camera state cache (disables the "
+                         "Camera tab)")
     ap.add_argument("--camera-interval", type=float, default=1.0, metavar="SEC",
-                    help="nhịp vòng poll trạng thái camera")
+                    help="camera state poll period")
     ap.add_argument("--use-gsm", action="store_true",
-                    help="gộp yaw+pitch vào một gói GSM — nửa lưu lượng ở 20 Hz, "
-                         "nhưng cần firmware gimbal >= 0.5. Không tự thăm dò được "
-                         "vì GSM không có phản hồi")
+                    help="pack yaw and pitch into one GSM packet — half the "
+                         "traffic at 20 Hz, but it needs gimbal firmware >= 0.5. "
+                         "Cannot be probed, since GSM has no reply")
     ap.add_argument("--telemetry-hz", type=int, default=10, metavar="HZ",
-                    help="nhịp đẩy tư thế")
+                    help="attitude push rate")
     ap.add_argument("-v", "--verbose", action="store_true")
     return ap
 
@@ -522,16 +536,17 @@ async def _run(args) -> None:
 
     camera = None
     if not args.no_camera:
-        # Dry-run không có ai trả lời: mọi lệnh đọc sẽ im lặng và toàn bộ trường
-        # bị đánh dấu không hỗ trợ sau 3 vòng. Đúng như thiết kế, nhưng vô ích —
-        # nên không bật đệm ở chế độ đó.
+        # In dry-run nobody answers: every read would go silent and all fields
+        # would be marked unsupported after three cycles. Correct by design, but
+        # useless — so the cache is not started in that mode.
         if args.dry_run:
-            log.info("--dry-run: bỏ qua đệm trạng thái camera (không ai trả lời)")
+            log.info("--dry-run: skipping the camera state cache (nobody answers)")
         else:
             camera = CameraService(
                 link, interval=args.camera_interval,
-                # Gimbal đang quay thì lệnh đọc kẹt sau hàng ưu tiên và sẽ
-                # timeout. Nghỉ poll thay vì thu về một bản đồ năng lực sai.
+                # While the gimbal is turning, reads queue behind the priority
+                # traffic and time out. Rest instead of collecting a false
+                # capability map.
                 busy=lambda: gimbal is not None and gimbal.state.moving,
             )
             await camera.start()
@@ -547,9 +562,9 @@ async def _run(args) -> None:
     stopping = asyncio.Event()
 
     def _shutdown() -> None:
-        # Ngả thứ năm của đường dừng khẩn: tín hiệu hệ thống.
+        # Path five of the emergency stop: an OS signal.
         if gimbal is not None:
-            gimbal.stop_all("tín hiệu tắt")
+            gimbal.stop_all("shutdown signal")
         else:
             for frame in reg.STOP_FRAMES:
                 link.send_frame(frame, priority=True)

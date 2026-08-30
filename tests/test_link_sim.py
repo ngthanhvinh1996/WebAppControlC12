@@ -1,7 +1,7 @@
-"""Integration test: UdpLink nói chuyện với C12Simulator qua socket thật.
+"""Integration test: UdpLink talking to C12Simulator over a real socket.
 
-Chạy trên loopback nên vẫn nhanh, nhưng đi qua đúng đường mã hoá / socket /
-tách khung / demux mà phần cứng thật sẽ đi.
+It runs on loopback so it is still fast, but it goes through exactly the
+encoding / socket / frame-splitting / demux path that real hardware will take.
 """
 
 import asyncio
@@ -31,7 +31,7 @@ async def link(sim):
 
 
 # --------------------------------------------------------------------------
-# Đường đọc
+# The read path
 # --------------------------------------------------------------------------
 
 
@@ -74,13 +74,14 @@ async def test_read_sdcard_present(link):
 
 
 async def test_unsupported_read_times_out_and_returns_none(link):
-    """Lệnh camera không hỗ trợ thì IM LẶNG. Đó chính là dữ liệu pha 1 cần."""
+    """An unsupported camera command stays SILENT. That silence is the data phase 1
+    needs."""
     assert await link.request("read.ranging", timeout=0.1) is None
     assert link.stats.timeouts == 1
 
 
 async def test_diagnostics_sweep_reports_which_commands_are_alive(link):
-    """Bản đồ năng lực — lệnh nào sống, lệnh nào im lặng."""
+    """The capability map — which commands are alive and which stay silent."""
     alive, silent = [], []
     for cmd in COMMANDS.values():
         if cmd.risk is not RiskLevel.SAFE:
@@ -90,7 +91,7 @@ async def test_diagnostics_sweep_reports_which_commands_are_alive(link):
 
     assert "read.version" in alive
     assert "read.zoom" in alive
-    assert "read.ranging" in silent      # bytecode ghi chỉ C13/C14
+    assert "read.ranging" in silent      # the bytecode says C13/C14 only
     assert alive and silent
 
 
@@ -105,7 +106,8 @@ async def test_link_rejects_unknown_command(link):
 
 
 async def test_link_rejects_command_not_from_registry(link):
-    """Không dựng được Command rồi tuồn qua link — allowlist không có ngoại lệ."""
+    """You cannot forge a Command and slip it through the link — the allowlist has
+    no exceptions."""
     from dataclasses import replace
 
     forged = replace(COMMANDS["camera.snap"], cmd3="RST", data="01")
@@ -125,21 +127,21 @@ async def test_speed_command_moves_simulated_gimbal(link, sim):
 
 
 async def test_gimbal_auto_stops_without_keepalive(sim, link):
-    """Hành vi mặc định của simulator: dừng khi ngừng nhận gói."""
+    """The simulator's default behaviour: stop when packets stop arriving."""
     link.send("gimbal.yaw_speed", 20, priority=True)
     await asyncio.sleep(SPEED_HOLD_TIMEOUT + 0.1)
     assert sim.state.yaw_speed == 0
 
 
 async def test_keepalive_keeps_it_moving():
-    """Vòng 20 Hz là tập cha của cả hai hành vi — nó đúng ở cả hai chế độ."""
+    """The 20 Hz loop is a superset of both behaviours — correct in either mode."""
     for hold in (False, True):
         s = C12Simulator(hold_speed=hold, seed=1)
         await s.start("127.0.0.1", 0)
         lk = UdpLink("127.0.0.1", s.port, local_port=0, min_tx_gap=0.001)
         await lk.start()
         try:
-            for _ in range(10):                       # 10 tick × 50 ms
+            for _ in range(10):                       # 10 ticks × 50 ms
                 lk.send("gimbal.yaw_speed", 20, priority=True)
                 await asyncio.sleep(0.05)
             assert s.state.yaw > 5, "hold_speed=%s" % hold
@@ -168,7 +170,7 @@ async def test_gsm_falls_silent_on_old_firmware():
     try:
         lk.send("gimbal.speed", 20, 10, priority=True)
         await asyncio.sleep(0.08)
-        assert s.state.yaw_speed == 0, "GSM phải bị bỏ qua khi firmware < 0.5"
+        assert s.state.yaw_speed == 0, "GSM must be ignored on firmware < 0.5"
     finally:
         await lk.close()
         await s.close()
@@ -186,12 +188,12 @@ async def test_akey_center_returns_to_zero(link, sim):
 
 
 # --------------------------------------------------------------------------
-# Telemetry — thứ mà protocol.md kết luận nhầm là không tồn tại
+# Telemetry — the thing protocol.md wrongly concluded does not exist
 # --------------------------------------------------------------------------
 
 
 async def test_attitude_push_is_off_by_default(link, sim):
-    """Chính vì mặc định tắt mà quan sát 'không có telemetry' cho âm tính giả."""
+    """Being off by default is exactly why "no telemetry" was a false negative."""
     seen = []
     link.subscribe(lambda f: seen.append(f) if f.cmd3 == "GAC" else None)
     await asyncio.sleep(0.2)
@@ -203,7 +205,7 @@ async def test_attitude_push_after_gaa(link, sim):
     link.subscribe(lambda f: seen.append(f) if f.cmd3 == "GAC" else None)
     link.send("telemetry.push_attitude", 20)
     await asyncio.sleep(0.3)
-    assert len(seen) >= 3, "phải nhận được gói GAC sau khi bật GAA"
+    assert len(seen) >= 3, "GAC frames must arrive once GAA is enabled"
 
     att = Attitude.from_data(seen[-1].data)
     assert att.yaw == pytest.approx(sim.state.yaw, abs=0.05)
@@ -224,7 +226,7 @@ async def test_attitude_tracks_motion(link, sim):
 
 
 async def test_gaa_ignored_before_video(sim, link):
-    """Ràng buộc của hãng: GAA chỉ hiệu lực sau khi camera đã ra hình."""
+    """Vendor constraint: GAA only takes effect once the camera has video."""
     sim.state.has_video = False
     link.send("telemetry.push_attitude", 20)
     await asyncio.sleep(0.1)
@@ -232,20 +234,20 @@ async def test_gaa_ignored_before_video(sim, link):
 
 
 # --------------------------------------------------------------------------
-# Bền bỉ
+# Robustness
 # --------------------------------------------------------------------------
 
 
 async def test_survives_packet_loss():
-    """Mất 30% gói: có thể timeout, nhưng không được treo hay ném exception."""
+    """30% packet loss: timeouts are fine, but it must not hang or raise."""
     s = C12Simulator(chaos_loss=0.3, seed=7)
     await s.start("127.0.0.1", 0)
     lk = UdpLink("127.0.0.1", s.port, local_port=0, min_tx_gap=0.001)
     await lk.start()
     try:
         results = [await lk.request("read.model", timeout=0.15) for _ in range(20)]
-        assert any(r is not None for r in results), "mất hết gói là bất thường"
-        assert any(r is None for r in results), "chaos-loss 0.3 mà không mất gói nào?"
+        assert any(r is not None for r in results), "losing every packet is abnormal"
+        assert any(r is None for r in results), "chaos-loss 0.3 and nothing was lost?"
         assert all(r in (None, "0C") for r in results)
     finally:
         await lk.close()
@@ -253,7 +255,7 @@ async def test_survives_packet_loss():
 
 
 async def test_survives_garbage_prefix():
-    """Byte rác trước phản hồi không được làm mất khung hợp lệ đi sau nó."""
+    """Junk bytes before a reply must not cost us the valid frame behind them."""
     s = C12Simulator(chaos_garbage=1.0, seed=3)
     await s.start("127.0.0.1", 0)
     lk = UdpLink("127.0.0.1", s.port, local_port=0, min_tx_gap=0.001)
@@ -272,7 +274,7 @@ async def test_simulator_rejects_bad_checksum():
         transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
             asyncio.DatagramProtocol, remote_addr=("127.0.0.1", s.port)
         )
-        transport.sendto(b"#TPUD2wCAP0100\r\n")   # checksum sai
+        transport.sendto(b"#TPUD2wCAP0100\r\n")   # bad checksum
         await asyncio.sleep(0.05)
         transport.close()
         assert s.bad_checksum == 1
@@ -282,12 +284,12 @@ async def test_simulator_rejects_bad_checksum():
 
 
 # --------------------------------------------------------------------------
-# Hàng ưu tiên và dry-run
+# The priority queue and dry-run
 # --------------------------------------------------------------------------
 
 
 async def test_priority_queue_jumps_ahead(sim):
-    """Gói tốc độ gimbal không được xếp sau một loạt lệnh đọc."""
+    """A gimbal speed packet must not queue behind a batch of read commands."""
     lk = UdpLink("127.0.0.1", sim.port, local_port=0, min_tx_gap=0.02)
     await lk.start()
     order: list[str] = []
@@ -303,7 +305,7 @@ async def test_priority_queue_jumps_ahead(sim):
         await asyncio.sleep(0.2)
         gsy = next(i for i, f in enumerate(order) if "GSY" in f)
         vers = [i for i, f in enumerate(order) if "VER" in f]
-        assert gsy < max(vers), "lệnh ưu tiên phải vượt lên trước hàng thường"
+        assert gsy < max(vers), "a priority command must jump ahead of the normal queue"
     finally:
         await lk.close()
 
@@ -315,7 +317,7 @@ async def test_dry_run_opens_no_socket_and_sends_nothing(sim):
         lk.send("camera.snap")
         await asyncio.sleep(0.05)
         assert lk.stats.tx == 1
-        assert sim.rx_count == 0, "dry-run không được chạm tới mạng"
+        assert sim.rx_count == 0, "dry-run must never touch the network"
     finally:
         await lk.close()
 
@@ -340,7 +342,8 @@ async def test_journal_records_both_directions(tmp_path, sim):
 
 
 async def test_port_busy_gives_actionable_error(sim):
-    """Cổng 5000 bị chiếm là lỗi vận hành số một — thông báo phải chỉ được cách sửa."""
+    """A busy port 5000 is the number one operational failure — the message must
+    say how to fix it."""
     busy = UdpLink("127.0.0.1", sim.port, local_port=sim.port)
     with pytest.raises(PortBusyError, match="ground station"):
         await busy.start()

@@ -1,12 +1,13 @@
-"""Kiểu dữ liệu và bộ mã hoá tham số cho giao thức C12.
+"""Data types and parameter encoders for the C12 protocol.
 
-Mọi hằng số ở đây lấy từ bytecode ``rcsdk-v1.9.2.aar`` (xem PLAN_WEBAPP_C12.md §1),
-không lấy từ chuỗi APK. Hai chỗ hai nguồn mâu thuẫn và bytecode thắng:
+Every constant here comes from the ``rcsdk-v1.9.2.aar`` bytecode (see
+PLAN_WEBAPP_C12.md §1), not from APK strings. In two places the sources
+disagree and the bytecode wins:
 
-* Tốc độ gimbal: ``raw = deg_per_s / 0.5``, clamp ±127 → dải thật **±63.5 °/s**.
-  Bảng trong ``skydroid-c12-protocol.md`` gán nhãn lệch đúng hệ số 2.
-* Palette nhiệt nằm ở command word ``IMG``, **không phải** ``TAR``
-  (``TAR`` là khử nhiễu không gian, thang 0–100).
+* Gimbal speed: ``raw = deg_per_s / 0.5``, clamped to ±127 → real range
+  **±63.5 °/s**. The table in ``skydroid-c12-protocol.md`` is off by exactly 2×.
+* The thermal palette lives on command word ``IMG``, **not** ``TAR``
+  (``TAR`` is spatial noise reduction on a 0–100 scale).
 """
 
 from __future__ import annotations
@@ -14,56 +15,57 @@ from __future__ import annotations
 import enum
 
 # --------------------------------------------------------------------------
-# Phân loại
+# Classification
 # --------------------------------------------------------------------------
 
 
 class Dest(str, enum.Enum):
-    """Địa chỉ đích trong khung lệnh."""
+    """Destination address in a command frame."""
 
     CAMERA = "D"
     GIMBAL = "G"
 
 
 class RiskLevel(enum.IntEnum):
-    """Mức rủi ro, cưỡng chế ở tầng service — xem PLAN_WEBAPP_C12.md §3.1."""
+    """Risk tier, enforced in the service layer — see PLAN_WEBAPP_C12.md §3.1."""
 
     SAFE = 0
-    """Read-only. Luôn cho phép."""
+    """Read-only. Always allowed."""
 
     REVERSIBLE = 1
-    """Đổi trạng thái nhưng khôi phục dễ. Cho phép, hiển thị giá trị hiện tại."""
+    """Changes state but is easy to undo. Allowed; show the current value."""
 
     PHYSICAL = 2
-    """Gây chuyển động cơ khí. Chỉ khi phiên đang ARM và watchdog còn sống."""
+    """Causes mechanical motion. Only while the session is armed and the
+    watchdog is alive."""
 
     DANGEROUS = 3
-    """Có thể mất kết nối vĩnh viễn. KHÔNG được có mặt trong registry."""
+    """Can lose the device permanently. MUST NOT appear in the registry."""
 
 
 class Confidence(str, enum.Enum):
-    """Nguồn của một mục registry — để UI hiển thị và để biết cái gì cần verify."""
+    """Where a registry entry came from — for the UI, and to know what to verify."""
 
     BYTECODE = "bytecode"
-    """Dịch ngược từ rcsdk-v1.9.2.aar. Biết cả công thức, không chỉ kết quả."""
+    """Decompiled from rcsdk-v1.9.2.aar. Gives the formula, not just the result."""
 
     APK_STRING = "apk-string"
-    """Chỉ thấy chuỗi trong APK. Ngữ nghĩa là suy luận."""
+    """Only seen as a string in the APK. The meaning is inferred."""
 
     HYPOTHESIS = "hypothesis"
-    """Phỏng đoán. Phải verify trước khi tin."""
+    """A guess. Verify before trusting it."""
 
 
 # --------------------------------------------------------------------------
-# Enum tham số
+# Parameter enums
 # --------------------------------------------------------------------------
 
 
 class Palette(str, enum.Enum):
-    """Pseudo-color ảnh nhiệt, command word ``IMG``.
+    """Thermal pseudo-color, command word ``IMG``.
 
-    Đúng 11 mục — khớp con số 11 palette đếm được trong resource APK. Giá trị
-    ``02`` bị bỏ trống trong bytecode.
+    Exactly 11 entries — matching the 11 palettes counted in the APK resources.
+    Value ``02`` is left unused in the bytecode.
     """
 
     WHITE_HOT = "01"
@@ -80,12 +82,12 @@ class Palette(str, enum.Enum):
 
 
 class Resolution(str, enum.Enum):
-    """Độ phân giải ghi hình, command word ``VID``.
+    """Recording resolution, command word ``VID``.
 
-    Giá trị là **data trên dây** (2 ký tự), không phải ordinal của enum
-    ``Resolution`` trong SDK. Trường length của ``VID`` là 2, nên 720P đi dây là
-    ``00`` chứ không phải ``0`` — giữ nguyên dạng dây ở đây để không có chỗ nào
-    phải nhớ pad thêm, giống cách :class:`Palette` làm.
+    The value is the **on-the-wire data** (2 characters), not the ordinal of the
+    SDK's ``Resolution`` enum. ``VID`` has a length field of 2, so 720P goes out
+    as ``00`` rather than ``0`` — keeping the wire form here means nothing else
+    has to remember to pad, the same way :class:`Palette` works.
     """
 
     R_720P = "00"
@@ -95,11 +97,11 @@ class Resolution(str, enum.Enum):
 
 
 class AKey(str, enum.Enum):
-    """Lệnh một phím cho gimbal, command word ``PTZ``.
+    """One-key gimbal commands, command word ``PTZ``.
 
-    Chỉ khai báo 01–05. Bytecode cho biết ``0A``/``0B`` đổi chế độ lắp,
-    ``06``–``08`` đổi chế độ điều khiển, và ``0C``/``0D`` **khởi động hiệu chuẩn
-    gimbal** — không mục nào trong số đó được phép lọt vào registry.
+    Only 01–05 are declared. The bytecode shows ``0A``/``0B`` switch the mount
+    mode, ``06``–``08`` switch the control mode, and ``0C``/``0D`` **start a
+    gimbal calibration** — none of which may reach the registry.
     """
 
     UP = "01"
@@ -110,42 +112,43 @@ class AKey(str, enum.Enum):
 
 
 # --------------------------------------------------------------------------
-# Giới hạn
+# Limits
 # --------------------------------------------------------------------------
 
 SPEED_SCALE = 0.5
-"""°/s trên mỗi bậc raw (bytecode: hằng số 0.5f)."""
+"""°/s per raw step (bytecode: the constant 0.5f)."""
 
 SPEED_RAW_LIMIT = 127
 MAX_SPEED_DPS = SPEED_RAW_LIMIT * SPEED_SCALE  # 63.5
 
 ANGLE_SCALE = 100
-"""Bậc raw trên mỗi độ (bytecode: nhân 100)."""
+"""Raw steps per degree (bytecode: multiply by 100)."""
 
 ANGLE_RAW_LIMIT = 9000
 MAX_ANGLE_DEG = ANGLE_RAW_LIMIT / ANGLE_SCALE  # 90.0
 
 DEFAULT_GOTO_SPEED = 0x10
-"""Hậu tố tốc độ của lệnh góc tuyệt đối (GAY/GAP/GAM)."""
+"""Speed suffix on the absolute-angle commands (GAY/GAP/GAM)."""
 
 
 # --------------------------------------------------------------------------
-# Mã hoá số
+# Numeric encoding
 # --------------------------------------------------------------------------
 
 
 def u8_hex(value: int) -> str:
-    """int → 2 ký tự hex hoa, bù 2 cho số âm."""
+    """int → 2 uppercase hex chars, two's complement for negatives."""
     return "%02X" % (int(value) & 0xFF)
 
 
 def s16_hex(value: int) -> str:
-    """int16 bù 2 → 4 ký tự hex hoa (SkydroidGimbalControlCore.short2Hex)."""
+    """int16 two's complement → 4 uppercase hex chars
+    (SkydroidGimbalControlCore.short2Hex)."""
     return "%04X" % (int(value) & 0xFFFF)
 
 
 def parse_s16(text: str) -> int:
-    """4 ký tự hex → int16 có dấu."""
+    """4 hex chars → signed int16."""
     raw = int(text, 16)
     return raw - 0x10000 if raw >= 0x8000 else raw
 
@@ -155,11 +158,11 @@ def parse_u8(text: str) -> int:
 
 
 def speed_to_raw(deg_per_s: float) -> int:
-    """°/s → byte tốc độ có dấu, clamp ở ±127.
+    """°/s → signed speed byte, clamped to ±127.
 
     >>> speed_to_raw(25)
     50
-    >>> speed_to_raw(99)      # vượt dải, bị clamp
+    >>> speed_to_raw(99)      # out of range, clamped
     127
     """
     return max(
@@ -168,17 +171,17 @@ def speed_to_raw(deg_per_s: float) -> int:
 
 
 def raw_to_speed(raw: int) -> float:
-    """Byte tốc độ có dấu → °/s."""
+    """Signed speed byte → °/s."""
     return raw * SPEED_SCALE
 
 
 def clamp_speed(deg_per_s: float) -> float:
-    """°/s → °/s đã lượng tử hoá và clamp đúng như thiết bị sẽ hiểu."""
+    """°/s → °/s quantized and clamped exactly as the device will read it."""
     return raw_to_speed(speed_to_raw(deg_per_s))
 
 
 def angle_to_raw(deg: float) -> int:
-    """Độ → int16 raw, clamp ở ±9000.
+    """Degrees → raw int16, clamped to ±9000.
 
     >>> angle_to_raw(30)
     3000
@@ -187,7 +190,7 @@ def angle_to_raw(deg: float) -> int:
 
 
 def raw_to_angle(raw: int) -> float:
-    """int16 raw → độ."""
+    """Raw int16 → degrees."""
     return raw / ANGLE_SCALE
 
 
@@ -196,12 +199,12 @@ def clamp_angle(deg: float) -> float:
 
 
 # --------------------------------------------------------------------------
-# Cấu trúc trả về
+# Returned structures
 # --------------------------------------------------------------------------
 
 
 class Attitude:
-    """Tư thế gimbal, giải mã từ gói ``GAC`` tự đẩy."""
+    """Gimbal attitude, decoded from a pushed ``GAC`` frame."""
 
     __slots__ = ("yaw", "pitch", "roll")
 
@@ -212,9 +215,9 @@ class Attitude:
 
     @classmethod
     def from_data(cls, data: str) -> "Attitude":
-        """``GAC`` chở 3 int16 hex liên tiếp, chia 100 ra độ."""
+        """``GAC`` carries 3 consecutive int16 hex values; divide by 100 for degrees."""
         if len(data) < 12:
-            raise ValueError("gói GAC cần 12 ký tự data, nhận %d" % len(data))
+            raise ValueError("a GAC frame needs 12 data characters, got %d" % len(data))
         return cls(
             yaw=raw_to_angle(parse_s16(data[0:4])),
             pitch=raw_to_angle(parse_s16(data[4:8])),
@@ -229,7 +232,7 @@ class Attitude:
             return NotImplemented
         return self.as_dict() == other.as_dict()
 
-    def __repr__(self) -> str:  # pragma: no cover - tiện debug
+    def __repr__(self) -> str:  # pragma: no cover - debugging convenience
         return "Attitude(yaw=%.2f, pitch=%.2f, roll=%.2f)" % (
             self.yaw,
             self.pitch,
@@ -238,7 +241,7 @@ class Attitude:
 
 
 class SDCardStatus:
-    """Trả về của ``SDC``. Cả hai bằng 0 nghĩa là chưa cắm thẻ."""
+    """Return value of ``SDC``. Both fields zero means no card is inserted."""
 
     __slots__ = ("total_mb", "free_mb")
 
@@ -257,5 +260,5 @@ class SDCardStatus:
             "present": self.present,
         }
 
-    def __repr__(self) -> str:  # pragma: no cover - tiện debug
+    def __repr__(self) -> str:  # pragma: no cover - debugging convenience
         return "SDCardStatus(total_mb=%d, free_mb=%d)" % (self.total_mb, self.free_mb)

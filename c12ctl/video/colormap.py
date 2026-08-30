@@ -1,14 +1,15 @@
-"""Tô màu ảnh nhiệt phía server.
+"""Server-side thermal colorization.
 
-**Đây là phương án dự phòng, không phải đường mặc định.** C12 tự tô màu được qua
-lệnh ``IMG`` (11 palette, xem registry) — để camera làm thì không tốn CPU nào, và
-ảnh ghi ra thẻ SD có màu giống hệt màn hình.
+**This is the fallback, not the default path.** The C12 colorizes on its own via
+the ``IMG`` command (11 palettes, see the registry) — letting the camera do it
+costs no CPU here, and the stills written to the SD card then match what is on
+screen.
 
-Giữ đường này cho hai trường hợp: pha 1 phát hiện ``IMG`` không phản hồi, và các
-overlay sau này cần ảnh xám gốc để xử lý.
+This path exists for two cases: phase 1 finding that ``IMG`` does not answer, and
+future overlays that need the original grayscale image to work from.
 
-Dùng ``cv2.applyColorMap`` thay vì filter ``pseudocolor`` của ffmpeg: LUT 256 bậc
-liên tục, không bị banding.
+Uses ``cv2.applyColorMap`` rather than ffmpeg's ``pseudocolor`` filter: a
+continuous 256-step LUT, so no banding.
 """
 
 from __future__ import annotations
@@ -16,8 +17,8 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-#: Tên → hằng số OpenCV. ``white_hot``/``black_hot`` xử lý riêng vì chúng không
-#: phải colormap mà là ảnh xám thuận/nghịch.
+#: Name → OpenCV constant. ``white_hot``/``black_hot`` are handled separately
+#: because they are not colormaps but plain and inverted grayscale.
 COLORMAPS: dict[str, int | None] = {
     "white_hot": None,
     "black_hot": None,
@@ -38,10 +39,10 @@ def available() -> list[str]:
 
 
 def apply(image: np.ndarray, name: str = DEFAULT) -> np.ndarray:
-    """Tô màu một khung xám. Ảnh nhiều kênh được chuyển xám trước.
+    """Colorize a grayscale frame. Multi-channel images are converted first.
 
-    Tên không nhận ra thì trả ảnh xám thuận — thà hiển thị đúng ảnh gốc còn hơn
-    ném lỗi giữa luồng video.
+    An unrecognized name returns plain grayscale — better to show the true
+    original than to raise in the middle of a video stream.
     """
     if image.ndim == 3:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -57,8 +58,9 @@ def apply(image: np.ndarray, name: str = DEFAULT) -> np.ndarray:
 
 
 def upscale(image: np.ndarray, width: int, height: int) -> np.ndarray:
-    """Phóng to bằng ``INTER_NEAREST`` — giữ pixel sắc nét.
+    """Scale up with ``INTER_NEAREST`` — keeps pixels crisp.
 
-    Hợp với nguồn 384×288 của C12: nội suy mượt chỉ làm nhoè dữ liệu vốn đã ít.
+    Right for the C12's 384×288 source: smooth interpolation only blurs data
+    that was already sparse.
     """
     return cv2.resize(image, (width, height), interpolation=cv2.INTER_NEAREST)

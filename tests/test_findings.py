@@ -1,4 +1,4 @@
-"""Bản đồ năng lực và preflight."""
+"""The capability map and preflight."""
 
 import json
 
@@ -44,11 +44,11 @@ async def test_sweep_separates_alive_from_silent(link):
 
 
 async def test_sweep_records_raw_data_not_just_decoded(link):
-    """Format thô là thứ pha 1 cần để chốt các format chưa xác minh."""
+    """The raw format is what phase 1 needs in order to settle unverified formats."""
     report = await findings.sweep(link, timeout=0.1)
     sd = next(p for p in report.probes if p.name == "read.sdcard")
     assert sd.raw is not None
-    assert len(sd.raw) <= 15, "data không thể dài quá 15 — trường length 1 hex"
+    assert len(sd.raw) <= 15, "data cannot exceed 15 — the length field is 1 hex char"
     assert sd.value["present"] is True
 
 
@@ -61,7 +61,7 @@ async def test_sweep_measures_latency_for_live_commands(link):
 
 
 async def test_sweep_is_read_only(link):
-    """Quét không được đổi bất kỳ trạng thái nào của camera."""
+    """The sweep must not change any camera state whatsoever."""
     st = link.sim.state
     before = (st.zoom, st.palette, st.resolution, st.recording,
               dict(st.thermal), st.yaw, st.pitch, st.gaa_rate)
@@ -78,27 +78,28 @@ async def test_sweep_only_sends_read_frames(link):
         seen.append(d.decode(errors="replace").strip()), original(d, a)
     )[1]
     await findings.sweep(link, timeout=0.1)
-    assert seen, "không gửi gói nào?"
-    assert all(f[6] == "r" for f in seen), "quét gửi lệnh GHI: %r" % [
+    assert seen, "no packet was sent at all?"
+    assert all(f[6] == "r" for f in seen), "the sweep sent a WRITE command: %r" % [
         f for f in seen if f[6] != "r"
     ]
 
 
 # --------------------------------------------------------------------------
-# Kỳ vọng và bất ngờ
+# Expectations and surprises
 # --------------------------------------------------------------------------
 
 
 async def test_predictions_reference_only_real_commands():
     unknown = set(findings.PREDICTIONS) - set(COMMANDS)
-    assert unknown == set(), "PREDICTIONS trỏ tới lệnh không có: %s" % unknown
+    assert unknown == set(), "PREDICTIONS references missing commands: %s" % unknown
 
 
 async def test_no_surprises_against_simulator(link):
-    """Simulator dựng theo đúng kỳ vọng của tài liệu, nên không được có bất ngờ.
+    """The simulator is built to match the documented expectations, so there
+    should be no surprises.
 
-    Nếu test này đỏ thì hoặc simulator sai, hoặc PREDICTIONS sai — cả hai đều
-    đáng biết trước khi cắm phần cứng thật.
+    If this test goes red then either the simulator is wrong or PREDICTIONS is
+    wrong — both worth knowing before plugging in real hardware.
     """
     report = await findings.sweep(link, timeout=0.1)
     assert report.surprises == [], [
@@ -107,7 +108,7 @@ async def test_no_surprises_against_simulator(link):
 
 
 async def test_surprise_flagged_when_expectation_breaks(link):
-    """Cho SLR trả lời — trái kỳ vọng — và báo cáo phải đánh dấu bất ngờ."""
+    """Make SLR answer — against expectation — and the report must flag a surprise."""
     link.sim.state.__dict__.setdefault("_", None)
     original = link.sim._handle_read
 
@@ -121,7 +122,7 @@ async def test_surprise_flagged_when_expectation_breaks(link):
         link, timeout=0.1, commands=[COMMANDS["read.ranging"]]
     )
     assert report.surprises
-    assert "BẤT NGỜ" in report.surprises[0].note
+    assert "SURPRISE" in report.surprises[0].note
 
 
 async def test_alive_and_silent_both_carry_notes(link):
@@ -133,7 +134,7 @@ async def test_alive_and_silent_both_carry_notes(link):
 
 
 # --------------------------------------------------------------------------
-# Xuất kết quả
+# Exporting results
 # --------------------------------------------------------------------------
 
 
@@ -146,7 +147,7 @@ async def test_jsonl_appends_across_runs(link, tmp_path):
     r2 = await findings.sweep(link, timeout=0.1)
     findings.append_jsonl(r2, path)
     lines = path.read_text().splitlines()
-    assert len(lines) == 2 * n1, "phải nối thêm chứ không đè"
+    assert len(lines) == 2 * n1, "must append rather than overwrite"
 
     records = [json.loads(l) for l in lines]
     assert len({r["run"] for r in records}) == 2
@@ -155,17 +156,17 @@ async def test_jsonl_appends_across_runs(link, tmp_path):
 
 async def test_markdown_report_is_useful(link):
     md = findings.render_markdown(await findings.sweep(link, timeout=0.1))
-    assert "# Bản đồ năng lực C12" in md
-    assert "## Lệnh trả lời" in md
-    assert "## Lệnh im lặng" in md
+    assert "# C12 capability map" in md
+    assert "## Commands that answered" in md
+    assert "## Commands that stayed silent" in md
     assert "read.version" in md
     assert "#TPUD2rVER0051" in md
-    assert "C13" in md, "lý do một lệnh im lặng phải có trong báo cáo"
+    assert "C13" in md, "the reason a command was silent must appear in the report"
 
 
 async def test_text_report_marks_surprises(link):
     text = findings.render_text(await findings.sweep(link, timeout=0.1))
-    assert "trả lời" in text and "im lặng" in text
+    assert "answered" in text and "silent" in text
 
 
 # --------------------------------------------------------------------------
@@ -182,7 +183,7 @@ def test_control_port_check_detects_busy_port():
     try:
         check = preflight.check_control_port(port)
         assert check.status == preflight.FAIL
-        assert "ss -lunp" in check.fix, "phải chỉ được cách tìm thủ phạm"
+        assert "ss -lunp" in check.fix, "it must show how to find the culprit"
     finally:
         sock.close()
 
@@ -200,7 +201,7 @@ def test_host_ip_check_explains_static_ip_when_absent():
 def test_link_check_mentions_power_and_cable_facts():
     check = preflight.check_link()
     if check.status == preflight.FAIL:
-        assert "JST-2P" in check.fix, "RJ45 không cấp nguồn — phải nói rõ"
+        assert "JST-2P" in check.fix, "RJ45 carries no power — say so explicitly"
         assert "100 Mb/s" in check.fix
 
 

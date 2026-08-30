@@ -1,17 +1,18 @@
-"""Cầu MJPEG: khung → JPEG → ``multipart/x-mixed-replace``.
+"""MJPEG bridge: frame → JPEG → ``multipart/x-mixed-replace``.
 
-Hai quyết định định hình module này:
+Two decisions shape this module:
 
-**Encode một lần cho mọi client.** Encoder là một task duy nhất; client chỉ đọc
-``bytes`` đã encode sẵn. Encode theo từng kết nối là cách nhân chi phí CPU lên
-theo số người xem mà chẳng được gì.
+**Encode once for all clients.** The encoder is a single task; clients only read
+already-encoded ``bytes``. Encoding per connection multiplies CPU cost by the
+number of viewers and buys nothing.
 
-**Chỉ encode khi có người xem.** Không ai mở stream thì task encoder ngủ. Trên
-Rubik Pi 3, encode 720p30 cho một cái tab không ai nhìn là lãng phí thật.
+**Only encode while someone is watching.** With no open stream the encoder task
+sleeps. On the Rubik Pi 3, encoding 720p30 for a tab nobody is looking at is real
+waste.
 
-MJPEG được chọn cho pha 2 vì nó **chắc chắn chạy trên mọi trình duyệt**, trong khi
-H.265 qua WebRTC phụ thuộc vào phiên bản trình duyệt và decode phần cứng. Đo trước,
-tối ưu sau — xem PLAN_WEBAPP_C12.md §4.
+MJPEG was chosen for phase 2 because it **certainly works in every browser**,
+while H.265 over WebRTC depends on the browser version and on hardware decoding.
+Measure first, optimize later — see PLAN_WEBAPP_C12.md §4.
 """
 
 from __future__ import annotations
@@ -59,7 +60,7 @@ class StreamStats:
 
 
 class MjpegStream:
-    """Một luồng MJPEG dựng trên một :class:`VideoSource`."""
+    """One MJPEG stream built on top of a :class:`VideoSource`."""
 
     def __init__(
         self,
@@ -89,7 +90,7 @@ class MjpegStream:
     def name(self) -> str:
         return self.source.name
 
-    # ------------------------------------------------------------- encoder
+    # -------------------------------------------------------------- encoder
 
     async def _encode_loop(self) -> None:
         last_seq = 0
@@ -110,8 +111,9 @@ class MjpegStream:
                 last_emit = now
 
                 started = time.monotonic()
-                # Encode là việc CPU thuần và giữ GIL — đẩy sang thread để không
-                # chặn vòng lặp asyncio đang chạy watchdog gimbal.
+                # Encoding is pure CPU work and holds the GIL — push it to a
+                # thread so it cannot block the asyncio loop that runs the gimbal
+                # watchdog.
                 payload = await asyncio.to_thread(self._render, frame.image)
                 elapsed = (time.monotonic() - started) * 1000
 
@@ -129,12 +131,12 @@ class MjpegStream:
                         fut.set_result((payload, self._jpeg_seq))
         except asyncio.CancelledError:
             raise
-        except Exception:  # pragma: no cover - không để encoder chết lặng lẽ
-            log.exception("encoder %s chết", self.name)
+        except Exception:  # pragma: no cover - never let the encoder die silently
+            log.exception("encoder %s died", self.name)
             raise
 
     def _render(self, image: np.ndarray) -> bytes:
-        """Chạy trên thread: colormap → scale → JPEG."""
+        """Runs on a thread: colormap → scale → JPEG."""
         if self.colormap:
             image = cmap.apply(image, self.colormap)
         elif image.ndim == 2:
@@ -146,11 +148,11 @@ class MjpegStream:
 
         ok, buf = cv2.imencode(".jpg", image,
                                [cv2.IMWRITE_JPEG_QUALITY, int(self.quality)])
-        if not ok:  # pragma: no cover - imencode hỏng là chuyện rất lạ
-            raise RuntimeError("cv2.imencode thất bại")
+        if not ok:  # pragma: no cover - imencode failing would be very strange
+            raise RuntimeError("cv2.imencode failed")
         return buf.tobytes()
 
-    # ------------------------------------------------------------- client
+    # --------------------------------------------------------------- client
 
     async def _acquire(self) -> None:
         async with self._lock:
@@ -159,7 +161,7 @@ class MjpegStream:
                 self._encoder = asyncio.create_task(
                     self._encode_loop(), name="mjpeg-%s" % self.name
                 )
-                log.info("luồng %s: encoder chạy (client đầu tiên)", self.name)
+                log.info("stream %s: encoder started (first client)", self.name)
 
     async def _release(self) -> None:
         async with self._lock:
@@ -168,7 +170,7 @@ class MjpegStream:
                 self._encoder.cancel()
                 self._encoder = None
                 self.stats.out_fps.reset()
-                log.info("luồng %s: encoder ngủ (hết client)", self.name)
+                log.info("stream %s: encoder asleep (no clients left)", self.name)
 
     async def next_jpeg(self, after: int = 0,
                         timeout: float = 5.0) -> tuple[bytes, int] | None:
@@ -189,7 +191,7 @@ class MjpegStream:
             raise
 
     async def frames(self):
-        """Sinh các phần multipart. Dùng cho ``StreamingResponse``."""
+        """Yield multipart parts. Used by ``StreamingResponse``."""
         await self._acquire()
         seq = 0
         try:
@@ -206,12 +208,12 @@ class MjpegStream:
                     + payload + b"\r\n"
                 )
         finally:
-            # Chạy cả khi client đóng tab giữa chừng — nếu không, encoder sẽ
-            # chạy mãi cho một người xem không còn tồn tại.
+            # Runs even when the client closes the tab mid-stream — otherwise the
+            # encoder would keep running for a viewer that no longer exists.
             await self._release()
 
     async def snapshot(self, timeout: float = 3.0) -> bytes | None:
-        """Một khung JPEG đơn lẻ. Không cần encoder đang chạy."""
+        """A single JPEG frame. Does not need a running encoder."""
         frame = self.source.bus.latest
         if frame is None:
             frame = await self.source.bus.next_frame(timeout=timeout)

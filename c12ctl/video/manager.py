@@ -1,18 +1,20 @@
-"""Hai luồng của C12, cấu hình sẵn theo thông số đo được.
+"""The C12's two streams, preconfigured from measured parameters.
 
-|            | Khả kiến      | Nhiệt          |
-|------------|---------------|----------------|
+|            | Visible         | Thermal         |
+|------------|-----------------|-----------------|
 | RTSP       | `:554/stream=1` | `:555/stream=2` |
-| Codec      | HEVC Main     | HEVC Main      |
-| Kích thước | 1280×720      | 384×288        |
-| Nhịp       | 30 fps        | 25 fps         |
+| Codec      | HEVC Main       | HEVC Main       |
+| Size       | 1280×720        | 384×288         |
+| Rate       | 30 fps          | 25 fps          |
 
-Hai luồng **lệch nhịp** (30 vs 25) nên chạy hoàn toàn độc lập: mỗi luồng một thread,
-một bus, một encoder. Không có chỗ nào đồng bộ khung giữa chúng — cố đồng bộ hai
-nguồn lệch nhịp chỉ tạo ra giật hoặc độ trễ.
+The two streams run at **different rates** (30 vs 25) so they are kept fully
+independent: one thread, one bus and one encoder each. Nothing synchronizes
+frames between them — trying to sync two sources with different rates only
+produces judder or latency.
 
-Luồng nhiệt để ``scale=2.0``: 384×288 hiển thị nguyên cỡ thì quá nhỏ, và phóng to
-ở server bằng ``INTER_NEAREST`` rẻ hơn nhiều so với để trình duyệt nội suy mượt.
+The thermal stream uses ``scale=2.0``: 384×288 shown at native size is too small,
+and upscaling server-side with ``INTER_NEAREST`` is far cheaper than letting the
+browser interpolate smoothly.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ THERMAL = "thermal"
 
 @dataclass(frozen=True)
 class StreamSpec:
-    """Thông số một luồng, đo bằng ffprobe trên C12 thật."""
+    """One stream's parameters, measured with ffprobe against a real C12."""
 
     name: str
     label: str
@@ -53,30 +55,30 @@ class StreamSpec:
 
 SPECS: dict[str, StreamSpec] = {
     VISIBLE: StreamSpec(
-        name=VISIBLE, label="Khả kiến", rtsp_port=554, rtsp_path="stream=1",
+        name=VISIBLE, label="Visible", rtsp_port=554, rtsp_path="stream=1",
         width=1280, height=720, fps=30.0, grayscale=False, quality=80, scale=1.0,
     ),
     THERMAL: StreamSpec(
-        name=THERMAL, label="Nhiệt", rtsp_port=555, rtsp_path="stream=2",
+        name=THERMAL, label="Thermal", rtsp_port=555, rtsp_path="stream=2",
         width=384, height=288, fps=25.0, grayscale=True, quality=85, scale=2.0,
     ),
 }
 
 
 class VideoManager:
-    """Vòng đời của cả hai luồng."""
+    """Lifecycle of both streams."""
 
     def __init__(self) -> None:
         self.streams: dict[str, MjpegStream] = {}
         self.sources: dict[str, VideoSource] = {}
         self._started = False
 
-    # ---------------------------------------------------------------- dựng
+    # -------------------------------------------------------------- building
 
     @classmethod
     def synthetic(cls, *, colormap: str | None = "ironbow",
                   max_fps: float | None = None) -> "VideoManager":
-        """Hai luồng tổng hợp — không cần camera, không cần GStreamer."""
+        """Two synthetic streams — no camera, no GStreamer needed."""
         mgr = cls()
         for spec in SPECS.values():
             source = SyntheticSource(
@@ -90,14 +92,15 @@ class VideoManager:
     def live(cls, host: str = CAMERA_IP, *, decoder: str | None = None,
              colormap: str | None = None, latency: int = 200,
              max_fps: float | None = None) -> "VideoManager":
-        """Hai luồng RTSP thật.
+        """Two real RTSP streams.
 
-        :param decoder: đặt tên phần tử GStreamer (``avdec_h265`` trên máy dev,
-            ``v4l2h265dec`` trên Rubik Pi 3) để đi đường GStreamer. Bỏ trống thì
-            dùng backend FFMPEG của cv2 — chạy được ngay cả khi chưa cài
-            ``gst-plugins-bad``/``gst-libav``.
-        :param colormap: tô màu phía server. Mặc định ``None`` vì C12 tự tô được
-            qua lệnh ``IMG`` — chỉ bật khi pha 1 cho thấy ``IMG`` không phản hồi.
+        :param decoder: name a GStreamer element (``avdec_h265`` on the dev
+            machine, ``v4l2h265dec`` on the Rubik Pi 3) to take the GStreamer
+            path. Leave it empty to use cv2's FFMPEG backend — which works even
+            without ``gst-plugins-bad``/``gst-libav`` installed.
+        :param colormap: colorize server-side. Defaults to ``None`` because the
+            C12 colorizes on its own via ``IMG`` — only enable it if phase 1
+            shows that ``IMG`` does not answer.
         """
         mgr = cls()
         for spec in SPECS.values():
@@ -122,7 +125,7 @@ class VideoManager:
             label=spec.label,
         )
 
-    # ------------------------------------------------------------- vòng đời
+    # ------------------------------------------------------------- lifecycle
 
     def start(self) -> None:
         if self._started:
@@ -140,14 +143,14 @@ class VideoManager:
             source.stop()
         self._started = False
 
-    # ---------------------------------------------------------------- truy cập
+    # ----------------------------------------------------------------- access
 
     def get(self, name: str) -> MjpegStream:
         try:
             return self.streams[name]
         except KeyError:
             raise KeyError(
-                "luồng %r không có. Có: %s" % (name, ", ".join(self.streams))
+                "no stream named %r. Available: %s" % (name, ", ".join(self.streams))
             ) from None
 
     def stats(self) -> dict:

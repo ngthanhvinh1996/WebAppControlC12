@@ -1,14 +1,15 @@
-"""Quy trình pha 1 trong một lệnh: preflight → quét lệnh đọc → xuất kết quả.
+"""Phase 1 in a single command: preflight → sweep the read commands → export.
 
-    python -m c12ctl.diagnose                          # camera thật
+    python -m c12ctl.diagnose                          # real camera
     python -m c12ctl.diagnose --host 127.0.0.1 --port 15000 --local-port 0
     python -m c12ctl.diagnose --skip-preflight -o findings.jsonl -m CAPABILITIES.md
 
-Chỉ gửi lệnh ``2r``. Read-only, an toàn tuyệt đối — không đổi bất kỳ trạng thái
-nào của camera.
+Sends only ``2r`` commands. Read-only and completely safe — it changes no camera
+state at all.
 
-Preflight chạy trước và **chặn** nếu tầng link hỏng: quét lệnh trong khi cáp chưa
-cắm chỉ tạo ra 22 dòng timeout vô nghĩa và làm người đọc tưởng camera hỏng.
+Preflight runs first and **blocks** if the link layer is broken: sweeping
+commands with the cable unplugged produces 22 meaningless timeouts and leaves the
+reader thinking the camera is dead.
 """
 
 from __future__ import annotations
@@ -40,20 +41,20 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--host", default=DEFAULT_HOST)
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--local-port", type=int, default=DEFAULT_PORT,
-                    help="cổng UDP local; dùng 0 nếu 5000 đang bị chiếm")
+                    help="local UDP port; use 0 if 5000 is already taken")
     ap.add_argument("--timeout", type=float, default=0.4,
-                    help="chờ mỗi lệnh, giây (mặc định 0.4)")
+                    help="wait per command, in seconds (default 0.4)")
     ap.add_argument("--repeat", type=int, default=1, metavar="N",
-                    help="quét N lần; lệnh chỉ cần trả lời 1 lần là coi như sống. "
-                         "Dùng khi nghi ngờ mất gói")
+                    help="sweep N times; a command answering once counts as "
+                         "alive. Use this when packet loss is suspected")
     ap.add_argument("-o", "--out", default="logs/findings.jsonl",
-                    help="file JSONL, nối thêm chứ không đè")
+                    help="JSONL file, appended rather than overwritten")
     ap.add_argument("-m", "--markdown", default=None, metavar="PATH",
-                    help="xuất thêm bảng markdown")
+                    help="also write a markdown table")
     ap.add_argument("--packet-log", default=None, metavar="PATH",
-                    help="ghi mọi gói TX/RX ra JSONL")
+                    help="write every TX/RX packet to JSONL")
     ap.add_argument("--skip-preflight", action="store_true",
-                    help="bỏ qua kiểm tra mạng (dùng khi trỏ vào simulator)")
+                    help="skip the network checks (for pointing at the simulator)")
     ap.add_argument("--preflight-only", action="store_true")
     ap.add_argument("-v", "--verbose", action="store_true")
     return ap
@@ -68,16 +69,17 @@ async def _run(args) -> int:
         print(preflight.render(pre))
         print()
         if pre.blocking:
-            print("Dừng: %d kiểm tra hỏng ở tầng dưới giao thức."
+            print("Stopping: %d check(s) failed below the protocol layer."
                   % len(pre.blocking))
-            print("Sửa theo gợi ý bên trên rồi chạy lại. Quét lệnh lúc này chỉ "
-                  "sinh ra một loạt timeout vô nghĩa.")
-            print("\nMuốn quét bất chấp: thêm --skip-preflight")
+            print("Fix them using the hints above, then run again. Sweeping now "
+                  "would only produce a wall of meaningless timeouts.")
+            print("\nTo sweep anyway: add --skip-preflight")
             return 2
         if args.preflight_only:
             return 0
     elif args.preflight_only:
-        print("--preflight-only và --skip-preflight loại trừ nhau.", file=sys.stderr)
+        print("--preflight-only and --skip-preflight are mutually exclusive.",
+              file=sys.stderr)
         return 1
 
     try:
@@ -89,14 +91,14 @@ async def _run(args) -> int:
         return 2
 
     try:
-        print("── Quét lệnh đọc " + "─" * 48)
-        print("%d lệnh 🟢 SAFE, timeout %.1fs. Read-only — không đổi trạng thái nào.\n"
+        print("── Read command sweep " + "─" * 43)
+        print("%d 🟢 SAFE commands, timeout %.1fs. Read-only — no state is changed.\n"
               % (len(reg.read_commands()), args.timeout))
 
         report = await findings.sweep(link, timeout=args.timeout)
 
         for extra in range(1, max(1, args.repeat)):
-            log.info("lượt quét lại %d/%d cho các lệnh im lặng",
+            log.info("re-sweep pass %d/%d for the silent commands",
                      extra + 1, args.repeat)
             silent = [reg.COMMANDS[p.name] for p in report.silent]
             if not silent:
@@ -105,8 +107,8 @@ async def _run(args) -> int:
                                          commands=silent)
             revived = {p.name: p for p in again.probes if p.alive}
             if revived:
-                log.warning("%d lệnh sống ở lượt sau — nghi mất gói: %s",
-                            len(revived), ", ".join(revived))
+                log.warning("%d command(s) answered on a later pass — packet loss "
+                            "suspected: %s", len(revived), ", ".join(revived))
                 report.probes = [revived.get(p.name, p) for p in report.probes]
 
         print(findings.render_text(report))
@@ -114,29 +116,30 @@ async def _run(args) -> int:
         await link.close()
 
     out = findings.append_jsonl(report, args.out)
-    print("\nĐã ghi %d bản ghi vào %s" % (len(report.probes), out))
+    print("\nWrote %d records to %s" % (len(report.probes), out))
 
     if args.markdown:
         path = Path(args.markdown)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(findings.render_markdown(report), encoding="utf-8")
-        print("Bảng markdown: %s" % path)
+        print("Markdown table: %s" % path)
 
     if report.surprises:
-        print("\n⚠️  %d lệnh khác kỳ vọng — xem phần đầu bảng markdown:"
-              % len(report.surprises))
+        print("\n⚠️  %d command(s) differ from expectation — see the top of the "
+              "markdown table:" % len(report.surprises))
         for p in report.surprises:
             print("   %s (%s): %s" % (p.name, p.cmd3, p.note))
 
-    # Điều kiện qua pha 1: đọc được VER, MOD, SDC.
+    # Phase 1 exit criterion: VER, MOD and SDC can be read.
     required = {"read.version", "read.model", "read.sdcard"}
     got = {p.name for p in report.alive}
     missing = sorted(required - got)
     print()
     if missing:
-        print("Chưa đạt điều kiện qua pha 1 — còn thiếu: %s" % ", ".join(missing))
+        print("Phase 1 exit criterion not met — still missing: %s"
+              % ", ".join(missing))
         return 1
-    print("Đạt điều kiện qua pha 1: đọc được VER, MOD, SDC.")
+    print("Phase 1 exit criterion met: VER, MOD and SDC all read back.")
     return 0
 
 

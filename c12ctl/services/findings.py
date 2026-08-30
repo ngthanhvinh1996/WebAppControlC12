@@ -1,15 +1,17 @@
-"""Bản đồ năng lực: lệnh nào C12 thực sự trả lời.
+"""Capability map: which commands the C12 actually answers.
 
-Toàn bộ lệnh ``2r`` là read-only nên quét cả nhóm là **an toàn tuyệt đối**. Lệnh
-camera không hỗ trợ sẽ **im lặng** — và chính sự im lặng đó là dữ liệu: nó phân
-xử hộ ta những chỗ hai tài liệu nguồn mâu thuẫn, mà không cần gửi lệnh ghi nào.
+Every ``2r`` command is read-only, so sweeping the whole group is **completely
+safe**. A command the camera does not support stays **silent** — and that silence
+is data: it settles the places where the two source documents disagree, without
+sending a single write.
 
-Kết quả ghi ra JSONL (nối thêm, không đè) để so được giữa các lần chạy, kèm một
-bảng markdown sinh lại được để dán thẳng vào tài liệu.
+Results go to JSONL (appended, never overwritten) so runs can be compared, plus a
+regenerable markdown table to paste straight into the documentation.
 
-:data:`PREDICTIONS` là phần đáng giá nhất: mỗi lệnh đi kèm điều nó sẽ *chứng minh*
-nếu trả lời, và điều nó chứng minh nếu im lặng. Nhờ vậy báo cáo không chỉ nói
-"lệnh này im" mà nói "im lặng ở đây xác nhận SLR chỉ có trên C13/C14".
+:data:`PREDICTIONS` is the valuable part: each command carries what it *proves*
+if it answers, and what it proves if it stays silent. That way the report does
+not merely say "this one was silent" but "silence here confirms SLR is C13/C14
+only".
 """
 
 from __future__ import annotations
@@ -26,85 +28,94 @@ from ..transport.udp_link import UdpLink
 
 @dataclass(frozen=True)
 class Prediction:
-    """Điều một kết quả sẽ chứng minh."""
+    """What a result will prove."""
 
     if_alive: str = ""
     if_silent: str = ""
     expected: bool | None = None
-    """Kỳ vọng theo tài liệu. ``None`` = không có kỳ vọng, chỉ đi thu thập."""
+    """What the documentation expects. ``None`` = no expectation, just collecting."""
 
 
-#: Ánh xạ lệnh → ý nghĩa của kết quả. Chỉ liệt kê những lệnh mà kết quả thực sự
-#: nói lên điều gì đó; phần còn lại chỉ thu thập format phản hồi.
+#: Command → meaning of the result. Only commands whose result actually says
+#: something are listed; the rest are here to collect the reply format.
 PREDICTIONS: dict[str, Prediction] = {
     "read.palette": Prediction(
-        if_alive="XÁC NHẬN palette nằm ở IMG. skydroid-c12-protocol.md đoán TAR — "
-                 "sweep TAR sẽ phá cấu hình khử nhiễu chứ không đổi màu.",
-        if_silent="IMG không phản hồi. Kiểm tra lại trước khi ghi; có thể phải "
-                  "tô màu phía client bằng cv2.applyColorMap.",
+        if_alive="CONFIRMS the palette lives on IMG. skydroid-c12-protocol.md "
+                 "guessed TAR — sweeping TAR would wreck the noise-reduction "
+                 "config instead of changing colors.",
+        if_silent="IMG does not answer. Check again before writing; we may have "
+                  "to colorize client-side with cv2.applyColorMap.",
         expected=True,
     ),
     "read.thermal_spatial_nr": Prediction(
-        if_alive="TAR sống và là tham số khử nhiễu 0–100, KHÔNG phải palette. "
-                 "Ghi lại giá trị gốc trước khi động vào.",
-        if_silent="TAR không phản hồi trên C12.",
+        if_alive="TAR is alive and is a 0–100 noise-reduction parameter, NOT the "
+                 "palette. Record the original value before touching it.",
+        if_silent="TAR does not answer on the C12.",
         expected=True,
     ),
     "read.zoom": Prediction(
-        if_alive="XÁC NHẬN zoom nằm ở DZM (đích D). protocol.md đoán ZMC (đích M) "
-                 "— đó là lệnh của model có ống kính cơ.",
-        if_silent="DZM không phản hồi — thử lại trước khi kết luận.",
+        if_alive="CONFIRMS zoom lives on DZM (destination D). protocol.md guessed "
+                 "ZMC (destination M) — that is the mechanical-lens command.",
+        if_silent="DZM does not answer — retry before concluding.",
         expected=True,
     ),
     "read.ranging": Prediction(
-        if_alive="BẤT NGỜ: C12 có laser đo xa. Bytecode ghi SLR chỉ có ở C13/C14.",
-        if_silent="Xác nhận SLR chỉ có trên C13/C14, đúng như bytecode ghi.",
+        if_alive="SURPRISE: the C12 has a laser rangefinder. The bytecode says "
+                 "SLR is C13/C14 only.",
+        if_silent="Confirms SLR is C13/C14 only, exactly as the bytecode says.",
         expected=False,
     ),
     "read.thermal_scene": Prediction(
-        if_alive="BẤT NGỜ: C12 có scene mode. protocol.md ngờ đây là tính năng C13.",
-        if_silent="Xác nhận nghi ngờ của protocol.md: TSM là của C13, không phải C12.",
+        if_alive="SURPRISE: the C12 has scene modes. protocol.md suspected this "
+                 "was a C13 feature.",
+        if_silent="Confirms protocol.md's suspicion: TSM belongs to the C13, not "
+                  "the C12.",
         expected=False,
     ),
     "read.version": Prediction(
-        if_alive="Link lệnh hoạt động. Ghi lại chuỗi phiên bản.",
-        if_silent="Link hỏng ở tầng dưới — chạy preflight trước khi đi tiếp.",
+        if_alive="The command link works. Record the version string.",
+        if_silent="The link is broken lower down — run preflight before going on.",
         expected=True,
     ),
     "read.model": Prediction(
-        if_alive="Xác nhận đang nói chuyện với đúng model.",
-        if_silent="Không đọc được model.",
+        if_alive="Confirms we are talking to the model we think we are.",
+        if_silent="Could not read the model.",
         expected=True,
     ),
     "read.sdcard": Prediction(
-        if_alive="Ghi lại FORMAT THÔ. Trường length chỉ 1 ký tự hex nên data tối "
-                 "đa 15 ký tự — điều đó loại mọi giả thuyết 2×32-bit.",
-        if_silent="SDC data=01 không phản hồi; thử read.sdcard_alt (data=00).",
+        if_alive="Record the RAW FORMAT. The length field is a single hex "
+                 "character, so data is at most 15 characters — which rules out "
+                 "every 2×32-bit hypothesis.",
+        if_silent="SDC data=01 does not answer; try read.sdcard_alt (data=00).",
         expected=True,
     ),
     "read.sdcard_alt": Prediction(
-        if_alive="SDC data=00 là một sub-query khác. So format với read.sdcard.",
-        if_silent="Chỉ data=01 được hỗ trợ.",
+        if_alive="SDC data=00 is a different sub-query. Compare its format with "
+                 "read.sdcard.",
+        if_silent="Only data=01 is supported.",
     ),
     "read.ext_config": Prediction(
-        if_alive="EXT sống. Lưu ý lệnh GHI dùng header chữ thường #tp.",
-        if_silent="EXT không có trên C12.",
+        if_alive="EXT is alive. Remember the WRITE command uses the lowercase "
+                 "#tp header.",
+        if_silent="EXT is not present on the C12.",
     ),
     "read.ip_address": Prediction(
-        if_alive="Ghi lại IP hiện tại. CHỈ ĐỌC — ghi vào IPV là mất camera.",
-        if_silent="IPV không phản hồi.",
+        if_alive="Record the current IP. READ ONLY — writing IPV loses the camera.",
+        if_silent="IPV does not answer.",
     ),
     "read.gateway": Prediction(
-        if_alive="Ghi lại gateway hiện tại. CHỈ ĐỌC.",
-        if_silent="GTW không phản hồi.",
+        if_alive="Record the current gateway. READ ONLY.",
+        if_silent="GTW does not answer.",
     ),
     "read.video_config": Prediction(
-        if_alive="Ghi lại format VOM. Cần cho quy trình get→sửa 1 field→set sau này.",
-        if_silent="VOM không phản hồi.",
+        if_alive="Record the VOM format. Needed for a later get→edit one "
+                 "field→set workflow.",
+        if_silent="VOM does not answer.",
     ),
     "read.resolution": Prediction(
-        if_alive="VID sống. Đối chiếu giá trị với độ phân giải thật của luồng RTSP.",
-        if_silent="VID không phản hồi.",
+        if_alive="VID is alive. Cross-check the value against the real RTSP "
+                 "stream resolution.",
+        if_silent="VID does not answer.",
         expected=True,
     ),
 }
@@ -112,7 +123,7 @@ PREDICTIONS: dict[str, Prediction] = {
 
 @dataclass
 class Probe:
-    """Một lần dò một lệnh."""
+    """One probe of one command."""
 
     name: str
     cmd3: str
@@ -160,7 +171,7 @@ class Report:
 
 async def sweep(link: UdpLink, *, timeout: float = 0.4,
                 commands: list[Command] | None = None) -> Report:
-    """Quét toàn bộ lệnh 🟢 SAFE. Không đổi bất kỳ trạng thái nào."""
+    """Sweep every 🟢 SAFE command. Changes no state whatsoever."""
     report = Report(
         started_at=time.time(),
         host="%s:%d" % link.addr,
@@ -216,7 +227,7 @@ def _jsonable(value):
 
 
 def append_jsonl(report: Report, path: str | Path) -> Path:
-    """Nối một dòng cho mỗi lần dò. Không đè — so được giữa các lần chạy."""
+    """Append one line per probe. Never overwrites — runs stay comparable."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     run_id = "%s-%d" % (time.strftime("%Y%m%dT%H%M%S"), int(report.started_at % 1 * 1000))
@@ -229,33 +240,33 @@ def append_jsonl(report: Report, path: str | Path) -> Path:
 
 
 def render_markdown(report: Report) -> str:
-    """Bảng markdown dán thẳng được vào tài liệu."""
+    """A markdown table that can be pasted straight into the documentation."""
     lines = [
-        "# Bản đồ năng lực C12",
+        "# C12 capability map",
         "",
-        "Sinh tự động bởi `c12ctl.services.findings`. Chỉ dùng lệnh `2r` — read-only.",
+        "Generated by `c12ctl.services.findings`. Uses `2r` commands only — read-only.",
         "",
-        "- Thiết bị: `%s`" % report.host,
-        "- Thời điểm: %s" % time.strftime("%Y-%m-%d %H:%M:%S",
-                                          time.localtime(report.started_at)),
-        "- Kết quả: **%d/%d lệnh trả lời**, %d im lặng"
+        "- Device: `%s`" % report.host,
+        "- Time: %s" % time.strftime("%Y-%m-%d %H:%M:%S",
+                                     time.localtime(report.started_at)),
+        "- Result: **%d/%d commands answered**, %d silent"
         % (len(report.alive), len(report.probes), len(report.silent)),
         "",
     ]
 
     if report.surprises:
-        lines += ["## ⚠️ Khác với kỳ vọng", ""]
+        lines += ["## ⚠️ Different from expectation", ""]
         for p in report.surprises:
             lines.append("- **%s** (`%s`) — %s. %s"
                          % (p.name, p.cmd3,
-                            "trả lời dù không kỳ vọng" if p.alive
-                            else "im lặng dù kỳ vọng có",
+                            "answered although not expected to" if p.alive
+                            else "silent although expected to answer",
                             p.note))
         lines.append("")
 
     lines += [
-        "## Lệnh trả lời", "",
-        "| Lệnh | Gói | Data thô | Giải mã | ms |",
+        "## Commands that answered", "",
+        "| Command | Frame | Raw data | Decoded | ms |",
         "|---|---|---|---|---|",
     ]
     for p in report.alive:
@@ -263,15 +274,15 @@ def render_markdown(report: Report) -> str:
                      % (p.name, p.frame, p.raw if p.raw is not None else "—",
                         _fmt(p.value), p.latency_ms))
 
-    lines += ["", "## Lệnh im lặng", "",
-              "Không phản hồi = C12 không hỗ trợ. Đây là dữ liệu, không phải lỗi.",
-              "", "| Lệnh | Gói | Nghĩa là |", "|---|---|---|"]
+    lines += ["", "## Commands that stayed silent", "",
+              "No reply = the C12 does not support it. That is data, not a failure.",
+              "", "| Command | Frame | Which means |", "|---|---|---|"]
     for p in report.silent:
         lines.append("| `%s` | `%s` | %s |" % (p.name, p.frame, p.note or "—"))
 
     notes = [p for p in report.alive if p.note]
     if notes:
-        lines += ["", "## Ghi chú theo lệnh", ""]
+        lines += ["", "## Per-command notes", ""]
         for p in notes:
             lines.append("- **%s** — %s" % (p.name, p.note))
 
@@ -279,18 +290,18 @@ def render_markdown(report: Report) -> str:
 
 
 def render_text(report: Report) -> str:
-    """Bản in cho terminal."""
+    """Terminal rendering."""
     width = max((len(p.name) for p in report.probes), default=20)
     lines = []
     for p in report.probes:
         mark = "!" if p.surprise else " "
         if p.alive:
-            lines.append("%s ok     %-*s %-18s %s"
+            lines.append("%s answered %-*s %-18s %s"
                          % (mark, width, p.name, p.frame, _fmt(p.value)))
         else:
-            lines.append("%s silent %-*s %-18s —" % (mark, width, p.name, p.frame))
+            lines.append("%s silent   %-*s %-18s —" % (mark, width, p.name, p.frame))
     lines.append("")
-    lines.append("%d/%d trả lời, %d im lặng, %d khác kỳ vọng"
+    lines.append("%d/%d answered, %d silent, %d different from expectation"
                  % (len(report.alive), len(report.probes),
                     len(report.silent), len(report.surprises)))
     return "\n".join(lines)
