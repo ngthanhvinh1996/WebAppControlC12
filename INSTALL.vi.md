@@ -106,6 +106,9 @@ lệnh; không có ai trả lời nên đệm trạng thái camera sẽ rỗng �
 
 Đọc hết mục này trước khi cắm bất cứ thứ gì.
 
+> Phải làm xong bước 1–3 trước. Mọi lệnh bên dưới đều chạy bằng
+> `.venv/bin/python`, thứ chưa tồn tại cho tới khi bạn tạo môi trường ảo.
+
 ### Đấu nối
 
 - Camera cần **7.2–72 V qua đầu JST-2P**. RJ45 **không** cấp nguồn.
@@ -244,6 +247,28 @@ Kết quả ghi xuống `logs/`: `logs/sessions/` cho các phiên,
 `logs/findings.jsonl` cho bản đồ năng lực. Cả thư mục đã nằm trong `.gitignore`.
 
 ## 7. Xử lý sự cố
+
+### `.venv/bin/python: No such file or directory`
+
+`.venv/` **cố ý không nằm trong repo**. Môi trường ảo lưu đường dẫn tuyệt đối tới
+máy đã tạo ra nó, nên bản sao chép sang máy khác hỏng ngay từ đầu — nó phải được
+tạo lại trên từng máy. Vì vậy bản clone mới hoàn toàn chưa có `.venv` cho tới khi
+bạn chạy [bước 2](#2-cài-đặt):
+
+```bash
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+Mọi lệnh trong hướng dẫn này đều mở đầu bằng `.venv/bin/python`, nên đây là lỗi
+đầu tiên một bản clone mới gặp phải — kể cả khi bạn nhảy thẳng xuống trình tự
+khởi động ở [bước 5](#5-chạy-với-c12-thật).
+
+Hai dấu hiệu phân biệt lỗi này với lỗi ở tầng Python: thông báo do shell in ra
+(có tiền tố `bash:`) chứ không phải một traceback, và mã thoát là 127.
+
+Riêng `diagnose --preflight-only` **không cần** `python3-opencv` — nó không chạm
+tới tầng video — nên chạy được cả trên máy tối giản chỉ mới cài `python3-venv`.
 
 ### `ModuleNotFoundError: No module named 'cv2'`
 

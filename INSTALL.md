@@ -109,6 +109,9 @@ so the camera state cache stays empty by design.
 
 Read this section before plugging anything in.
 
+> Steps 1–3 must be done first. Every command below runs `.venv/bin/python`,
+> which does not exist until you have created the virtual environment.
+
 ### Wiring
 
 - The camera needs **7.2–72 V through the JST-2P connector**. RJ45 carries no
@@ -249,6 +252,29 @@ Output goes under `logs/`: `logs/sessions/` for recordings,
 `logs/findings.jsonl` for the capability map. The whole directory is gitignored.
 
 ## 7. Troubleshooting
+
+### `.venv/bin/python: No such file or directory`
+
+`.venv/` is deliberately not in the repository. A virtual environment stores
+absolute paths to the machine that built it, so a copied one is broken by
+construction — it has to be created on each machine. A fresh clone therefore has
+no `.venv` at all until you run [step 2](#2-install):
+
+```bash
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+Every command in this guide begins with `.venv/bin/python`, which makes this the
+first error a fresh clone runs into — including when you skip ahead to the
+bring-up sequence in [step 5](#5-run-with-a-real-c12).
+
+Two ways to tell this apart from a Python-level error: the message comes from the
+shell (prefixed `bash:`) rather than as a traceback, and the exit status is 127.
+
+`diagnose --preflight-only` is the one command that does **not** need
+`python3-opencv` — it never touches the video layer — so it works on a minimal
+machine where only `python3-venv` is installed.
 
 ### `ModuleNotFoundError: No module named 'cv2'`
 
