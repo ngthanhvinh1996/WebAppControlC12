@@ -303,6 +303,9 @@ const busy = on => document.querySelectorAll(".bar button:not(.stop)")
 
 let layout = "side", videoOn = true, streams = [];
 let ws = null, armed = false, maxSpeed = 10, cmd = { yaw: 0, pitch: 0 };
+// Set when the user asks to disarm, so the explanation below is only printed for
+// disarms the user did not ask for. Consumed by setArmedUI().
+let userDisarm = false;
 let keys = new Set(), stickVec = null, hbTimer = null;
 
 // ---------------------------------------------------------------- video
@@ -430,6 +433,7 @@ async function stop() {
   stickVec = null;
   cmd = { yaw: 0, pitch: 0 };
   drawKnob(0, 0);
+  userDisarm = true;
   send({ type: "stop" });
   await fetch("/api/stop", { method: "POST" });
   say("STOP sent — zero speed ×3 on both axes, session disarmed.");
@@ -689,6 +693,7 @@ const send = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
 
 function setArmedUI(on) {
   armed = on;
+  if (!on) userDisarm = false;
   $("#btn-arm").classList.toggle("armed", on);
   $("#btn-arm").textContent = on ? "ARMED — click to DISARM" : "ARM";
   if (!on) { keys.clear(); stickVec = null; drawKnob(0, 0); }
@@ -701,7 +706,13 @@ function renderStatus(m) {
   $("#v-wd").textContent = `${m.watchdog_ms} ms · ${m.stats.watchdog_trips} trips`;
   $("#v-lim").textContent = `±${m.soft_limit_deg}° · ${m.stats.limit_trips} blocks`;
   $("#v-stop").textContent = m.stats.last_stop_reason || "—";
-  if (m.armed !== armed) setArmedUI(m.armed);
+  if (m.armed !== armed) {
+    // The server disarmed us on its own. Say why — a button that silently flips
+    // back to ARM looks like a broken button, not like a safety system working.
+    if (!m.armed && !userDisarm && m.stats.last_stop_reason)
+      say("Disarmed by the server — " + m.stats.last_stop_reason + ".");
+    setArmedUI(m.armed);
+  }
 
   const t = m.telemetry;
   if (t && t.attitude) {
@@ -755,12 +766,18 @@ function readGamepad() {
   return null;
 }
 
-// Heartbeat: holding a key means no state message for that whole time, and the
-// 500 ms watchdog would cut in wrongly. Only sent while actually moving.
+// Heartbeat: the deadman switch. pushState() only sends on *change*, so an armed
+// session that is holding still sends nothing at all — and the 500 ms watchdog
+// would disarm it about half a second after ARM.
+//
+// Send it whenever ARMED, not merely while moving. The watchdog does not care
+// whether the gimbal is turning, so neither can this: the two rules have to
+// agree or one of them is wrong. What it still catches is the case it was built
+// for — a client that has gone away without closing the socket.
 function startHeartbeat() {
   if (hbTimer) return;
   hbTimer = setInterval(() => {
-    if (armed && (cmd.yaw || cmd.pitch)) send({ type: "ping" });
+    if (armed) send({ type: "ping" });
     pushState();
   }, 100);
 }
@@ -800,7 +817,10 @@ stick.addEventListener("pointermove", e => { if (stickVec) stickAt(e); });
 for (const ev of ["pointerup", "pointercancel", "pointerleave"])
   stick.addEventListener(ev, () => { stickVec = null; pushState(); });
 
-$("#btn-arm").onclick = () => send({ type: armed ? "disarm" : "arm" });
+$("#btn-arm").onclick = () => {
+  if (armed) userDisarm = true;
+  send({ type: armed ? "disarm" : "arm" });
+};
 $("#rng-speed").oninput = async e => {
   maxSpeed = parseFloat(e.target.value);
   $("#lbl-speed").textContent = maxSpeed.toFixed(1);

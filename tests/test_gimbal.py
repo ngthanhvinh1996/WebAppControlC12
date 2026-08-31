@@ -119,6 +119,39 @@ async def test_heartbeat_prevents_watchdog_trip(rig):
     assert rig.sim.state.yaw_speed != 0
 
 
+async def test_armed_and_still_survives_on_heartbeats_alone(rig):
+    """ARM without moving must stay armed. This shipped broken.
+
+    Every other test here arms and immediately commands motion, which hid the
+    hole: the browser only sends a state message when the vector *changes*, so
+    an armed session holding still sends nothing but heartbeats — and it was
+    sending those only while moving. The watchdog does not exempt a standing
+    gimbal, so the session disarmed itself half a second after ARM and the
+    gimbal could never be commanded at all.
+    """
+    rig.arm()
+    deadline = asyncio.get_running_loop().time() + FAST_WATCHDOG * 4
+    while asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+        rig.heartbeat()          # no set_speed — standing still, as the UI does
+
+    assert rig.armed
+    assert rig.stats.watchdog_trips == 0
+    assert rig.sim.state.yaw_speed == 0      # still armed, still not moving
+
+
+async def test_armed_and_still_disarms_without_heartbeats(rig):
+    """The counterpart: the deadman must still bite at zero speed.
+
+    Staying armed is earned by the heartbeats, not granted by standing still —
+    otherwise a client that froze while armed would leave the gate open.
+    """
+    rig.arm()
+    await asyncio.sleep(FAST_WATCHDOG + 0.15)
+    assert not rig.armed
+    assert "watchdog" in rig.stats.last_stop_reason
+
+
 async def test_close_stops_gimbal(rig):
     """Path 5: process exit."""
     rig.arm()
