@@ -38,7 +38,14 @@
                 font-weight: 600; margin-left: auto; }
   button.stop:hover { color: #fff; opacity: .88; }
   code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px; }
-  #status { color: var(--muted); font-size: 13.5px; margin: 11px 0 0; min-height: 1.6em; }
+  /* Vertical padding stays put so turning the warning on cannot shove the video
+     down the page. */
+  #status { color: var(--muted); font-size: 13.5px; margin: 11px 0 0;
+            min-height: 1.6em; padding: 5px 0; border: 1px solid transparent;
+            border-radius: 6px; }
+  #status.warn { color: var(--phys, #b85c15); background: var(--phys-bg, #faebde);
+                 border-color: var(--phys, #b85c15); font-weight: 600;
+                 padding: 5px 11px; }
 
   /* video */
   .deck { position: relative; margin-top: 14px; }
@@ -186,6 +193,19 @@
                                  background: rgba(255,255,255,.2); }
   .armbtn.armed, .armbtn.armed:hover { background: var(--phys); border-color: var(--phys);
                                        color: #16110a; }
+  /* The gimbal ignored a command, so point at the thing that would fix it. */
+  .armbtn.nag { border-color: var(--phys); animation: nag 1.1s ease-in-out infinite; }
+  @keyframes nag {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(229,143,61,0); }
+    50% { box-shadow: 0 0 0 4px rgba(229,143,61,.5); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .armbtn.nag { animation: none; background: rgba(229,143,61,.3); }
+  }
+  /* Asked for, and refused. Never the same colour as "moving": a control that
+     lights up the usual way while the gimbal ignores it is a lie. */
+  #stick.blocked { border-color: #e2564a; background: rgba(226,86,74,.15); }
+  #dpad button.blocked { background: rgba(226,86,74,.34); border-color: #e2564a; }
   .ovl .sp { display: block; font-size: 11px; color: rgba(242,240,249,.72); }
   .ovl .sp b { color: #fff; font-family: "IBM Plex Mono", monospace; }
   .ovl .hint { font-size: 10px; color: rgba(242,240,249,.55); text-align: center; }
@@ -341,6 +361,7 @@
       <div><i>Telemetry</i><b id="v-tel">—</b></div>
       <div><i>Watchdog</i><b id="v-wd">—</b></div>
       <div><i>Soft limit</i><b id="v-lim">—</b></div>
+      <div><i>Refused</i><b id="v-rej">—</b></div>
       <div><i>Last stop</i><b id="v-stop">—</b></div>
     </div>
     <div class="warn-strip">
@@ -417,7 +438,25 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-const say = m => $("#status").textContent = m;
+const say = m => { clearWarn(); $("#status").textContent = m; };
+
+// A refused command is not a status update. It gets the line, a colour, and a
+// pulse on the button that would have allowed it — an operator who is dragging
+// a control that does nothing needs to be told why, next to the fix.
+let warnTimer = null;
+function warn(text) {
+  $("#status").textContent = "⚠ WARNING: " + text;
+  $("#status").classList.add("warn");
+  $("#btn-arm").classList.add("nag");
+  clearTimeout(warnTimer);
+  warnTimer = setTimeout(clearWarn, 6000);
+}
+function clearWarn() {
+  clearTimeout(warnTimer);
+  warnTimer = null;
+  $("#status").classList.remove("warn");
+  $("#btn-arm").classList.remove("nag");
+}
 const busy = on => document.querySelectorAll(".bar button:not(.stop):not(.dead)")
   .forEach(b => b.disabled = on);
 // A control switched off for the whole session — the feature is not enabled on
@@ -863,7 +902,9 @@ function connectWS() {
     const m = JSON.parse(e.data);
     if (m.type === "status") renderStatus(m);
     else if (m.type === "armed") setArmedUI(m.armed);
-    else if (m.type === "rejected") say(m.detail);
+    // The server is the authority on what was refused, so its own words go on
+    // the line rather than a guess made here.
+    else if (m.type === "rejected") warn(m.detail);
   };
 }
 
@@ -874,6 +915,9 @@ function setArmedUI(on) {
   if (!on) userDisarm = false;
   $("#btn-arm").classList.toggle("armed", on);
   $("#btn-arm").textContent = on ? "ARMED — DISARM" : "ARM";
+  // Arming is the fix the warning was asking for; leaving it up would nag
+  // about a problem that no longer exists.
+  if (on) clearWarn();
   if (!on) { clearInputs(); drawKnob(0, 0); }
 }
 
@@ -883,6 +927,8 @@ function renderStatus(m) {
   $("#v-hz").textContent = m.tick_hz + " Hz";
   $("#v-wd").textContent = `${m.watchdog_ms} ms · ${m.stats.watchdog_trips} trips`;
   $("#v-lim").textContent = `±${m.soft_limit_deg}° · ${m.stats.limit_trips} blocks`;
+  $("#v-rej").textContent = m.stats.rejected
+    ? `${m.stats.rejected} while not armed` : "none";
   $("#v-stop").textContent = m.stats.last_stop_reason || "—";
   if (m.armed !== armed) {
     // The server disarmed us on its own. Say why — a button that silently flips
@@ -912,14 +958,20 @@ function pushState() {
   send({ type: "state", yaw: v.yaw, pitch: v.pitch });
   drawKnob(v.yaw / maxSpeed, -v.pitch / maxSpeed);
   const moving = v.yaw !== 0 || v.pitch !== 0;
-  $("#stick").classList.toggle("live", moving);
+  // Asking while disarmed is refused by the server, so the control must not
+  // light up as if it had worked.
+  const blocked = moving && !armed;
+  $("#stick").classList.toggle("live", moving && !blocked);
+  $("#stick").classList.toggle("blocked", blocked);
   // Light the arrows from the vector that was actually sent, not from the
   // pointer, so a key or a gamepad lights them too and the pad never claims a
   // direction the gimbal is not being asked for.
   for (const b of document.querySelectorAll("#dpad button")) {
     const d = DIRS[b.dataset.dir];
-    b.classList.toggle("held", (d.x && Math.sign(v.yaw) === d.x)
-                            || (d.y && Math.sign(v.pitch) === d.y));
+    const on = (d.x && Math.sign(v.yaw) === d.x)
+            || (d.y && Math.sign(v.pitch) === d.y);
+    b.classList.toggle("held", !!on && !blocked);
+    b.classList.toggle("blocked", !!on && blocked);
   }
 }
 

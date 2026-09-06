@@ -99,7 +99,10 @@ lệnh; không có ai trả lời nên đệm trạng thái camera sẽ rỗng �
 - **Gimbal control** — bộ điều khiển, nút ARM và bảng góc nằm ngay trên khung
   hình video, nên mắt không phải rời khỏi ảnh trong lúc gimbal đang quay. Phải
   bấm ARM trước: server từ chối mọi lệnh 🟠 PHYSICAL khi phiên chưa arm, nên ARM
-  là chốt an toàn thật chứ không phải một bước giao diện.
+  là chốt an toàn thật chứ không phải một bước giao diện. Nếu điều khiển khi
+  chưa ARM, giao diện hiện một dòng **WARNING** kèm đúng lý do server trả về,
+  cần/mũi tên chuyển **đỏ** thay vì sáng lên như thể đã ăn lệnh, và nút ARM nhấp
+  nháy. Thẻ **Refused** đếm số lệnh đã bị bỏ.
 
   Hai mode nhập liệu dùng chung một đường lệnh — cả hai đều quy về cặp tốc độ
   `GSY`/`GSP`, nên watchdog, soft limit và STOP hành xử y hệt nhau:

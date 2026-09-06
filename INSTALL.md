@@ -102,7 +102,10 @@ so the camera state cache stays empty by design.
 - **Gimbal control** — the control, ARM and the attitude readout sit on the video
   image itself, so nothing pulls your eyes off the picture while the gimbal is
   moving. Press ARM first: the server refuses every 🟠 PHYSICAL command while the
-  session is not armed, so ARM is a real interlock, not a UI step.
+  session is not armed, so ARM is a real interlock, not a UI step. Move the
+  control before arming and you get a **WARNING** line carrying the server's own
+  reason, the control turns red instead of lighting up as though it worked, and
+  ARM pulses. The **Refused** card counts how many commands were dropped.
 
   Two input modes share one command path — both end up in the same `GSY`/`GSP`
   speed pair, so the watchdog, the soft limits and STOP behave identically:
