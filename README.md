@@ -238,8 +238,19 @@ người dùng vừa chọn như thể nó đã có hiệu lực.
     --local-port 0 --http-port 8000 --video synthetic --max-speed 10
 ```
 
-Điều khiển bằng **kéo joystick ảo**, **WASD / phím mũi tên**, hoặc **gamepad**.
-`Space` / `Esc` dừng khẩn bất cứ lúc nào.
+Điều khiển bằng **kéo joystick ảo**, **D-pad lên/xuống/trái/phải**, **WASD /
+phím mũi tên**, hoặc **gamepad**. `Space` / `Esc` dừng khẩn bất cứ lúc nào.
+
+Hai mode nhập liệu, chung một đường lệnh: joystick quay được hai trục cùng lúc,
+D-pad giữ nút thì mỗi lần một trục ở tốc độ trần. Cả hai đều quy về cặp `GSY` +
+`GSP` — camera **không có** lệnh "chéo" riêng để mà thiếu, yaw và pitch là hai
+thanh ghi độc lập và controller gửi cả hai mỗi tick. Thứ thật sự tuỳ firmware là
+`GSM` (gộp hai trục vào một gói, cần ≥ 0.5, bật bằng `--use-gsm`), và registry đã
+ghi sẵn đường lui về hai lệnh rời.
+
+Lệnh một phím `PTZ` 01–05 của camera (UP/DOWN/LEFT/RIGHT/CENTER) **không** được
+dùng cho D-pad: `skydroid-c12-protocol.md` đánh dấu ánh xạ hướng là
+`[HYPOTHESIS]` — có thể quay hướng bất ngờ — và chưa verify trên phần cứng.
 
 Joystick, nút ARM và bảng góc (lệnh yaw/pitch, góc thực, tần số) được vẽ **đè
 lên khung hình video**: đang lái thì không phải nhìn xuống chỗ khác. Lớp này bám

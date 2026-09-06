@@ -99,12 +99,23 @@ so the camera state cache stays empty by design.
 - **Camera** — Snapshot, Record, Zoom, palette and resolution. Every write is
   read back before the result is shown, and reports `confirmed` / `mismatch` /
   `unverified`.
-- **Gimbal control** — the stick, ARM and the attitude readout sit on the video
+- **Gimbal control** — the control, ARM and the attitude readout sit on the video
   image itself, so nothing pulls your eyes off the picture while the gimbal is
-  moving. Press ARM, then drag the stick or use WASD / arrow keys. `Space` and
-  `Esc` are an emergency stop at any time. **Controls** in the toolbar folds the
-  overlay away when you want the bare image; the keyboard, the gamepad and STOP
-  keep working while it is hidden.
+  moving. Press ARM first: the server refuses every 🟠 PHYSICAL command while the
+  session is not armed, so ARM is a real interlock, not a UI step.
+
+  Two input modes share one command path — both end up in the same `GSY`/`GSP`
+  speed pair, so the watchdog, the soft limits and STOP behave identically:
+
+  - **Joystick** — drag; both axes at once, and speed follows how far you push.
+  - **D-pad** — hold an arrow; one axis at a time at the speed ceiling. Use this
+    when you want an unambiguous answer out of the hardware, such as "does yaw
+    alone move?", with no second axis mixed into the result.
+
+  WASD / arrow keys and a gamepad work in either mode, and light the arrows in
+  D-pad mode. `Space` and `Esc` are an emergency stop at any time. **Controls**
+  in the toolbar folds the overlay away when you want the bare image; the
+  keyboard, the gamepad and STOP keep working while it is hidden.
 - **Record session** — writes video, command traffic and attitude into
   `logs/sessions/<id>/` on one clock.
 - **Preflight** and **Sweep reads** — the network and protocol diagnostics.

@@ -54,7 +54,7 @@
   /* The controls sit on the primary view, so it keeps a floor tall enough for
      them even with no image at all: video toggled off, --video off, or a live
      stream that has not produced its first frame yet. */
-  .view.primary { min-height: 340px; }
+  .view.primary { min-height: 374px; }
   .views.pip .view.secondary {
     position: absolute; right: 14px; bottom: 14px; width: 30%; min-width: 190px;
     z-index: 3; border-color: var(--accent); box-shadow: 0 6px 22px rgba(0,0,0,.42);
@@ -143,6 +143,28 @@
                 color: rgba(242,240,249,.62); white-space: nowrap; }
   .ovl-hud .v { font-family: "IBM Plex Mono", monospace; font-size: 15px;
                 line-height: 1.3; font-variant-numeric: tabular-nums; }
+  /* Two input modes over one command path. The joystick can drive both axes at
+     once; the D-pad is one axis at a time, which is also the cleaner way to ask
+     the hardware "does yaw alone work?" without a second axis in the answer. */
+  .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .modes button { padding: 4px 0; font-size: 10.5px; letter-spacing: .04em;
+                  background: rgba(255,255,255,.07); border-color: var(--edge);
+                  color: rgba(242,240,249,.72); }
+  .modes button.on { background: rgba(255,255,255,.21); color: #fff;
+                     border-color: rgba(255,255,255,.46); }
+  .modes button:hover:not(.on) { color: #fff; border-color: rgba(255,255,255,.4); }
+  #dpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px;
+          aspect-ratio: 1; }
+  #dpad.hide { display: none; }   /* an id beats .hide on its own */
+  #dpad button { padding: 0; display: grid; place-items: center; font-size: 13px;
+                 border-radius: 6px; touch-action: none; user-select: none;
+                 background: rgba(255,255,255,.09); border: 1px solid var(--edge);
+                 color: #fff; }
+  #dpad button.held { background: var(--phys); border-color: var(--phys);
+                      color: #16110a; }
+  #dpad .mid { display: grid; place-items: center; }
+  #dpad .mid::after { content: ""; width: 5px; height: 5px; border-radius: 50%;
+                      background: rgba(242,240,249,.34); }
   #stick { width: 100%; aspect-ratio: 1; border-radius: 50%; position: relative;
            background: rgba(255,255,255,.06); border: 1px solid var(--edge);
            touch-action: none; cursor: grab; }
@@ -178,6 +200,14 @@
     .views.pip .view.secondary { width: 38%; min-width: 130px; }
     /* an inset that small is all caption otherwise */
     .views.pip .view.secondary .cap .m { display: none; }
+  }
+  /* Narrower still: the panel and the readout together are wider than the
+     image, so the readout has to give way or one would sit on the other. */
+  @media (max-width: 430px) {
+    .ovl-hud { padding: 5px 6px; gap: 4px; }
+    .ovl-hud .r { grid-template-columns: repeat(3, minmax(26px, 1fr)); gap: 5px; }
+    .ovl-hud .l { font-size: 7.5px; letter-spacing: .02em; }
+    .ovl-hud .v { font-size: 11.5px; }
   }
 
   /* the link facts that do not belong on the image */
@@ -263,8 +293,23 @@
       </div>
       <div class="ovl-stick">
         <button id="btn-arm" class="armbtn">ARM</button>
+        <div class="modes">
+          <button id="m-stick" class="on">Joystick</button>
+          <button id="m-pad">D-pad</button>
+        </div>
         <div id="stick"><div class="cross"></div><div id="knob"></div></div>
-        <div class="hint">Drag · WASD · gamepad</div>
+        <div id="dpad" class="hide">
+          <span></span>
+          <button data-dir="up" aria-label="pitch up">▲</button>
+          <span></span>
+          <button data-dir="left" aria-label="yaw left">◀</button>
+          <span class="mid"></span>
+          <button data-dir="right" aria-label="yaw right">▶</button>
+          <span></span>
+          <button data-dir="down" aria-label="pitch down">▼</button>
+          <span></span>
+        </div>
+        <div class="hint">WASD · gamepad</div>
         <label class="sp">Speed <b id="lbl-speed">10.0</b> °/s
           <input type="range" id="rng-speed" min="1" max="63.5" step="0.5" value="10">
         </label>
@@ -372,7 +417,16 @@ let gimbalOn = false, overlayOn = true;
 // Set when the user asks to disarm, so the explanation below is only printed for
 // disarms the user did not ask for. Consumed by setArmedUI().
 let userDisarm = false;
-let keys = new Set(), stickVec = null, hbTimer = null;
+let keys = new Set(), stickVec = null, padVec = null, hbTimer = null;
+// "stick" drives both axes at once, "pad" one axis at a time. Both end up in
+// the same set_speed call, so the watchdog, the soft limits and STOP do not
+// know which one is in use.
+let mode = "stick";
+
+// Anything that has to guarantee the gimbal stops must drop EVERY held input,
+// not just the one it happens to know about — a second mode is a second way to
+// leave a command standing.
+function clearInputs() { keys.clear(); stickVec = null; padVec = null; }
 
 // ---------------------------------------------------------------- video
 
@@ -471,9 +525,10 @@ $("#btn-layout").onclick = async () => {
 
 $("#btn-ovl").onclick = () => {
   overlayOn = !overlayOn;
-  // Hiding the stick mid-drag would kill the pointerup that zeroes it, and the
-  // gimbal would keep turning against a control nobody can see.
-  stickVec = null;
+  // Hiding a held control kills the release that zeroes it, and the gimbal
+  // would keep turning against a widget nobody can see. Keys are left alone —
+  // the keyboard still works while the overlay is folded away.
+  stickVec = padVec = null;
   pushState();
   syncOverlay();
   say(overlayOn ? "Controls back on the image."
@@ -538,8 +593,7 @@ async function sweep() {
 
 async function stop() {
   // Clear every held input BEFORE sending, or the next tick sends speed again.
-  keys.clear();
-  stickVec = null;
+  clearInputs();
   cmd = { yaw: 0, pitch: 0 };
   drawKnob(0, 0);
   userDisarm = true;
@@ -805,7 +859,7 @@ function setArmedUI(on) {
   if (!on) userDisarm = false;
   $("#btn-arm").classList.toggle("armed", on);
   $("#btn-arm").textContent = on ? "ARMED — DISARM" : "ARM";
-  if (!on) { keys.clear(); stickVec = null; drawKnob(0, 0); }
+  if (!on) { clearInputs(); drawKnob(0, 0); }
 }
 
 function renderStatus(m) {
@@ -842,10 +896,23 @@ function pushState() {
   cmd = v;
   send({ type: "state", yaw: v.yaw, pitch: v.pitch });
   drawKnob(v.yaw / maxSpeed, -v.pitch / maxSpeed);
-  $("#stick").classList.toggle("live", v.yaw !== 0 || v.pitch !== 0);
+  const moving = v.yaw !== 0 || v.pitch !== 0;
+  $("#stick").classList.toggle("live", moving);
+  // Light the arrows from the vector that was actually sent, not from the
+  // pointer, so a key or a gamepad lights them too and the pad never claims a
+  // direction the gimbal is not being asked for.
+  for (const b of document.querySelectorAll("#dpad button")) {
+    const d = DIRS[b.dataset.dir];
+    b.classList.toggle("held", (d.x && Math.sign(v.yaw) === d.x)
+                            || (d.y && Math.sign(v.pitch) === d.y));
+  }
 }
 
+const DIRS = { up: { x: 0, y: 1 }, down: { x: 0, y: -1 },
+               left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
+
 function currentVector() {
+  if (padVec) return { yaw: r1(padVec.x * maxSpeed), pitch: r1(padVec.y * maxSpeed) };
   if (stickVec) return { yaw: r1(stickVec.x * maxSpeed), pitch: r1(-stickVec.y * maxSpeed) };
   const gp = readGamepad();
   if (gp) return { yaw: r1(gp.x * maxSpeed), pitch: r1(-gp.y * maxSpeed) };
@@ -903,10 +970,11 @@ addEventListener("keyup", e => {
   if (keys.delete(k)) pushState();
 });
 
-// Alt-tab while holding a key: keyup will NEVER arrive. A real scenario.
-addEventListener("blur", () => { keys.clear(); stickVec = null; pushState(); });
+// Alt-tab while holding a key or a button: the release will NEVER arrive. A
+// real scenario.
+addEventListener("blur", () => { clearInputs(); pushState(); });
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) { keys.clear(); stickVec = null; pushState(); }
+  if (document.hidden) { clearInputs(); pushState(); }
 });
 
 const stick = $("#stick");
@@ -925,6 +993,40 @@ stick.addEventListener("pointerdown", e => {
 stick.addEventListener("pointermove", e => { if (stickVec) stickAt(e); });
 for (const ev of ["pointerup", "pointercancel", "pointerleave"])
   stick.addEventListener(ev, () => { stickVec = null; pushState(); });
+
+// The pad holds a direction for as long as the button is held. Capture the
+// pointer so sliding a thumb off the button still delivers the release — the
+// gimbal must not be left turning because a finger moved 3 px.
+for (const b of document.querySelectorAll("#dpad button")) {
+  b.addEventListener("pointerdown", e => {
+    b.setPointerCapture(e.pointerId);
+    padVec = DIRS[b.dataset.dir];
+    pushState();
+  });
+  for (const ev of ["pointerup", "pointercancel", "lostpointercapture"])
+    b.addEventListener(ev, () => { padVec = null; pushState(); });
+  // A held button that keeps focus would repeat on Space, which is the STOP key.
+  b.addEventListener("keydown", e => e.preventDefault());
+}
+
+function setMode(next) {
+  mode = next;
+  // Switching away from a held control is the same trap as hiding the overlay:
+  // the release event never arrives at an element that is gone.
+  stickVec = padVec = null;
+  pushState();
+  $("#m-stick").classList.toggle("on", mode === "stick");
+  $("#m-pad").classList.toggle("on", mode === "pad");
+  $("#stick").classList.toggle("hide", mode !== "stick");
+  $("#dpad").classList.toggle("hide", mode !== "pad");
+  $(".ovl-stick .hint").textContent =
+    mode === "stick" ? "Drag · WASD · gamepad" : "One axis at a time · WASD";
+  say(mode === "stick"
+    ? "Joystick: both axes at once, speed follows how far you push."
+    : "D-pad: hold a direction, one axis at a time, at the speed ceiling.");
+}
+$("#m-stick").onclick = () => setMode("stick");
+$("#m-pad").onclick = () => setMode("pad");
 
 $("#btn-arm").onclick = () => {
   if (armed) userDisarm = true;

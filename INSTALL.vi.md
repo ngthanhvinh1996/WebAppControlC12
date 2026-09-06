@@ -96,11 +96,23 @@ lệnh; không có ai trả lời nên đệm trạng thái camera sẽ rỗng �
 - **Camera** — chụp ảnh, ghi hình, zoom, palette, độ phân giải. Mọi lệnh ghi đều
   được đọc lại trước khi hiện kết quả, và báo `confirmed` / `mismatch` /
   `unverified`.
-- **Gimbal control** — cần điều khiển, nút ARM và bảng góc nằm ngay trên khung
-  hình video, nên mắt không phải rời khỏi ảnh trong lúc gimbal đang quay. Bấm
-  ARM, rồi kéo cần hoặc dùng WASD / phím mũi tên. `Space` và `Esc` là dừng khẩn,
-  bất cứ lúc nào. Nút **Controls** trên thanh công cụ thu lớp điều khiển lại khi
-  cần xem ảnh trống; lúc ẩn thì bàn phím, gamepad và STOP vẫn chạy.
+- **Gimbal control** — bộ điều khiển, nút ARM và bảng góc nằm ngay trên khung
+  hình video, nên mắt không phải rời khỏi ảnh trong lúc gimbal đang quay. Phải
+  bấm ARM trước: server từ chối mọi lệnh 🟠 PHYSICAL khi phiên chưa arm, nên ARM
+  là chốt an toàn thật chứ không phải một bước giao diện.
+
+  Hai mode nhập liệu dùng chung một đường lệnh — cả hai đều quy về cặp tốc độ
+  `GSY`/`GSP`, nên watchdog, soft limit và STOP hành xử y hệt nhau:
+
+  - **Joystick** — kéo cần; hai trục cùng lúc, đẩy càng xa quay càng nhanh.
+  - **D-pad** — giữ mũi tên; mỗi lần một trục, chạy ở tốc độ trần. Dùng mode này
+    khi cần câu trả lời dứt khoát từ phần cứng, kiểu "chỉ yaw thôi có quay
+    không?", không bị trục thứ hai lẫn vào kết quả.
+
+  WASD / phím mũi tên và gamepad chạy ở cả hai mode, và làm sáng mũi tên khi
+  đang ở D-pad. `Space` và `Esc` là dừng khẩn, bất cứ lúc nào. Nút **Controls**
+  trên thanh công cụ thu lớp điều khiển lại khi cần xem ảnh trống; lúc ẩn thì
+  bàn phím, gamepad và STOP vẫn chạy.
 - **Record session** — ghi video, lưu lượng lệnh và tư thế vào
   `logs/sessions/<id>/` trên cùng một đồng hồ.
 - **Preflight** và **Sweep reads** — chẩn đoán mạng và giao thức.
