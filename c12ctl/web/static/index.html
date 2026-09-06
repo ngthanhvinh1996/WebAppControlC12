@@ -47,11 +47,14 @@
   @media (min-width: 860px) { .views.side { grid-template-columns: 2fr 1fr; } }
   .views.pip { grid-template-columns: 1fr; position: relative; }
   .view { border: 1px solid var(--rule); border-radius: 7px; overflow: hidden;
-          background: #000; position: relative; }
+          background: #000; position: relative;
+          /* a stream with no frames yet is still a panel, not a hairline: an
+             <img> holding no data is 0 px tall, and the caption says why */
+          min-height: 84px; }
   /* The controls sit on the primary view, so it keeps a floor tall enough for
      them even with no image at all: video toggled off, --video off, or a live
      stream that has not produced its first frame yet. */
-  .view.primary { min-height: 320px; }
+  .view.primary { min-height: 340px; }
   .views.pip .view.secondary {
     position: absolute; right: 14px; bottom: 14px; width: 30%; min-width: 190px;
     z-index: 3; border-color: var(--accent); box-shadow: 0 6px 22px rgba(0,0,0,.42);
