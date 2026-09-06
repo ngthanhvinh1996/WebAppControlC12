@@ -241,6 +241,13 @@ người dùng vừa chọn như thể nó đã có hiệu lực.
 Điều khiển bằng **kéo joystick ảo**, **WASD / phím mũi tên**, hoặc **gamepad**.
 `Space` / `Esc` dừng khẩn bất cứ lúc nào.
 
+Joystick, nút ARM và bảng góc (lệnh yaw/pitch, góc thực, tần số) được vẽ **đè
+lên khung hình video**: đang lái thì không phải nhìn xuống chỗ khác. Lớp này bám
+theo luồng chính ở mọi bố cục — side by side, PiP, hay xếp dọc trên điện thoại —
+và nút **Controls** ẩn nó đi khi cần xem ảnh trống. Các thông tin không cần liếc
+liên tục (WebSocket, telemetry, watchdog, soft limit, lần dừng gần nhất) nằm
+thành một hàng ngay dưới video.
+
 ### Telemetry (pha 4)
 
 `GAA` bật camera tự đẩy gói `GAC` chứa yaw/pitch/roll. Đây là thứ

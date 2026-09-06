@@ -96,8 +96,11 @@ lệnh; không có ai trả lời nên đệm trạng thái camera sẽ rỗng �
 - **Camera** — chụp ảnh, ghi hình, zoom, palette, độ phân giải. Mọi lệnh ghi đều
   được đọc lại trước khi hiện kết quả, và báo `confirmed` / `mismatch` /
   `unverified`.
-- **Gimbal control** — bấm ARM, rồi kéo cần hoặc dùng WASD / phím mũi tên.
-  `Space` và `Esc` là dừng khẩn, bất cứ lúc nào.
+- **Gimbal control** — cần điều khiển, nút ARM và bảng góc nằm ngay trên khung
+  hình video, nên mắt không phải rời khỏi ảnh trong lúc gimbal đang quay. Bấm
+  ARM, rồi kéo cần hoặc dùng WASD / phím mũi tên. `Space` và `Esc` là dừng khẩn,
+  bất cứ lúc nào. Nút **Controls** trên thanh công cụ thu lớp điều khiển lại khi
+  cần xem ảnh trống; lúc ẩn thì bàn phím, gamepad và STOP vẫn chạy.
 - **Record session** — ghi video, lưu lượng lệnh và tư thế vào
   `logs/sessions/<id>/` trên cùng một đồng hồ.
 - **Preflight** và **Sweep reads** — chẩn đoán mạng và giao thức.

@@ -99,8 +99,12 @@ so the camera state cache stays empty by design.
 - **Camera** — Snapshot, Record, Zoom, palette and resolution. Every write is
   read back before the result is shown, and reports `confirmed` / `mismatch` /
   `unverified`.
-- **Gimbal control** — press ARM, then drag the stick or use WASD / arrow keys.
-  `Space` and `Esc` are an emergency stop at any time.
+- **Gimbal control** — the stick, ARM and the attitude readout sit on the video
+  image itself, so nothing pulls your eyes off the picture while the gimbal is
+  moving. Press ARM, then drag the stick or use WASD / arrow keys. `Space` and
+  `Esc` are an emergency stop at any time. **Controls** in the toolbar folds the
+  overlay away when you want the bare image; the keyboard, the gamepad and STOP
+  keep working while it is hidden.
 - **Record session** — writes video, command traffic and attitude into
   `logs/sessions/<id>/` on one clock.
 - **Preflight** and **Sweep reads** — the network and protocol diagnostics.
