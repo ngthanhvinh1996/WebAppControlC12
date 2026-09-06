@@ -54,7 +54,7 @@
   /* The controls sit on the primary view, so it keeps a floor tall enough for
      them even with no image at all: video toggled off, --video off, or a live
      stream that has not produced its first frame yet. */
-  .view.primary { min-height: 374px; }
+  .view.primary { min-height: 332px; }
   .views.pip .view.secondary {
     position: absolute; right: 14px; bottom: 14px; width: 30%; min-width: 190px;
     z-index: 3; border-color: var(--accent); box-shadow: 0 6px 22px rgba(0,0,0,.42);
@@ -133,8 +133,11 @@
     backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
     box-shadow: 0 6px 20px rgba(0,0,0,.35);
   }
-  .ovl-stick { left: 14px; bottom: 14px; padding: 10px; display: grid; gap: 8px;
-               width: clamp(124px, 20vw, 168px); }
+  /* The panel width sets the control's diameter, and the control sets how tall
+     .view.primary has to be floored — which is what letterboxes a short image.
+     Keep it only as big as a mouse needs. */
+  .ovl-stick { left: 14px; bottom: 14px; padding: 8px; display: grid; gap: 6px;
+               width: clamp(112px, 13vw, 138px); }
   /* 32px clears the .cap strip with the stream stats. */
   .ovl-hud { right: 14px; top: 32px; padding: 8px 10px; display: grid; gap: 7px; }
   .ovl-hud .r { display: grid; grid-template-columns: repeat(3, minmax(44px, 1fr));
@@ -191,8 +194,20 @@
      three corners have to share it: readout top right, stick bottom left, PiP
      inset bottom right. The taller floor is what keeps the first two apart. */
   @media (max-width: 660px) {
-    .view.primary { min-height: 370px; }
-    .ovl-hud { padding: 6px 8px; gap: 5px; }
+    /* A 16:9 image on a phone is barely 200 px tall, so a panel sized for a
+       desktop would floor the view above the picture and letterbox it. Shrink
+       the whole cluster instead, and let it start above the caption — the
+       stream name matters less here than the pixels it would cost. */
+    .view.primary { min-height: 200px; }
+    .ovl-stick { left: 10px; bottom: 10px; width: 94px; padding: 6px; gap: 4px; }
+    .armbtn { padding: 4px; font-size: 10.5px; }
+    .modes { gap: 3px; }
+    .modes button { padding: 2px 0; font-size: 9px; letter-spacing: 0; }
+    #dpad { gap: 4px; }
+    #dpad button { font-size: 11px; border-radius: 5px; }
+    .ovl .sp { font-size: 9.5px; }
+    .ovl input[type=range] { margin-top: 0; height: 13px; }
+    .ovl-hud { top: 10px; right: 10px; padding: 6px 8px; gap: 5px; }
     .ovl-hud .r { grid-template-columns: repeat(3, minmax(34px, 1fr)); gap: 8px; }
     .ovl-hud .l { font-size: 8.5px; }
     .ovl-hud .v { font-size: 13px; }
