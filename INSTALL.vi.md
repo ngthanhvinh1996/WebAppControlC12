@@ -54,7 +54,7 @@ websockets.
 .venv/bin/python -m pytest
 ```
 
-Phải thấy **524 test xanh** trong khoảng 45 giây. Bộ test chạy simulator qua
+Phải thấy **548 test xanh** trong khoảng 45 giây. Bộ test chạy simulator qua
 socket UDP thật và một server uvicorn thật, nên xanh nghĩa là **cả stack chạy
 được trên máy bạn**, chứ không chỉ là code import được.
 
@@ -119,6 +119,9 @@ lệnh; không có ai trả lời nên đệm trạng thái camera sẽ rỗng �
 - **Record session** — ghi video, lưu lượng lệnh và tư thế vào
   `logs/sessions/<id>/` trên cùng một đồng hồ.
 - **Preflight** và **Sweep reads** — chẩn đoán mạng và giao thức.
+- **Debug log** — ở cuối trang: file cần gửi đi khi có sự cố, kèm nút tải về và
+  nút đánh dấu thời điểm (phím <kbd>M</kbd> làm đúng việc đó mà không phải rời
+  tay khỏi bộ điều khiển). Xem [Xử lý sự cố](#7-xử-lý-sự-cố).
 
 ## 5. Chạy với C12 thật
 
@@ -255,6 +258,10 @@ nghĩa là chưa nhận được gì. Kiểm tra theo thứ tự:
 | `--packet-log` | — | ghi mọi gói TX/RX ra file JSONL |
 | `--record-fps` | `5` | số khung ghi mỗi giây, cho mỗi luồng |
 | `--no-gimbal` / `--no-telemetry` / `--no-camera` / `--no-record` | bật | tắt từng phân hệ |
+| `--debug-log` | `logs/debug/c12ctl.log` | nơi ghi debug log |
+| `--no-debug-log` | tắt | không ghi debug log |
+| `--debug-snapshot` | `10` | số giây giữa hai lần chụp trạng thái; `0` là tắt |
+| `--debug-packets` | tắt | ghi mọi gói, kể cả luồng tốc độ 20 Hz |
 
 > ⚠️ **App không có xác thực.** Mặc định `--bind 127.0.0.1` chỉ nhận kết nối từ
 > chính máy đó. Đổi thành `--bind 0.0.0.0` — ví dụ để mở giao diện từ máy tính
@@ -262,9 +269,57 @@ nghĩa là chưa nhận được gì. Kiểm tra theo thứ tự:
 > đó. Chỉ làm khi bạn kiểm soát được mạng.
 
 Kết quả ghi xuống `logs/`: `logs/sessions/` cho các phiên,
-`logs/findings.jsonl` cho bản đồ năng lực. Cả thư mục đã nằm trong `.gitignore`.
+`logs/findings.jsonl` cho bản đồ năng lực, `logs/debug/` cho debug log. Cả thư
+mục đã nằm trong `.gitignore`.
 
 ## 7. Xử lý sự cố
+
+### Việc đầu tiên: gửi debug log
+
+Mỗi lần chạy đều ghi một file, ở `logs/debug/c12ctl.log`. Đây là cách nhanh nhất
+để người không đứng ở bàn thử chẩn đoán được sự cố, vì nó đã trả lời sẵn những
+câu hỏi mà nếu không có thì họ sẽ phải hỏi lại:
+
+* **lúc đó đang chạy cái gì** — version và git commit, board và hệ điều hành,
+  Python, cv2 được biên dịch với backend nào, và **toàn bộ** tham số app được
+  khởi động cùng;
+* **cái gì đã đi qua link** — các gói, trừ luồng tốc độ 20 Hz (chỉ đếm, không
+  in) và các gói lặp y hệt (gộp lại, và mỗi phút vẫn in lại một lần để không
+  nhầm một link im lặng với một link đã chết);
+* **cứ 10 giây một lần chụp trạng thái** link, gimbal, telemetry, cả hai luồng
+  video, bộ đệm camera, kèm CPU, RAM và nhiệt độ SoC — đây là chỗ nhìn ra
+  throttle vì nóng, hay một luồng đã chết âm thầm;
+* **cái gì đã xảy ra trên trình duyệt** — ARM, đổi mode, từng vector đã lệnh,
+  WebSocket rớt, lệnh bị từ chối, lỗi JavaScript. Backend không thấy được những
+  thứ đó, mà chúng là một nửa của mọi báo cáo "gimbal không quay".
+
+Khi đang test, thấy gì bất thường thì bấm ngay phím <kbd>M</kbd> — hoặc dùng nút
+**Mark this moment** trong khung *Debug log* ở cuối trang nếu muốn gõ kèm ghi
+chú. Một mark ghi lại mốc thời gian cộng một lần chụp đầy đủ trạng thái, để
+người đọc biết cần soi vào đoạn nào của file.
+
+Rồi gửi file đi. Từ trang web bấm **Download the log** (gộp luôn các phần đã
+xoay vòng), hoặc từ shell:
+
+```bash
+# ngay trên board
+less logs/debug/c12ctl.log
+
+# qua mạng — đúng thứ mà cái nút kia tải về
+curl -s http://127.0.0.1:8000/api/debug/download -o c12-debug.log
+```
+
+Đọc lại một file:
+
+```bash
+grep 'c12ctl.ui'      logs/debug/c12ctl.log   # người vận hành đã làm gì
+grep 'snap\[.*video'  logs/debug/c12ctl.log   # đường video theo thời gian
+grep -E 'MARK|WARNING|ERROR' logs/debug/c12ctl.log
+```
+
+File xoay vòng ở 8 MB × 3 nên không thể làm đầy thẻ, và trong đó không có gì bí
+mật — chỉ có địa chỉ IP và các frame lệnh, không có mật khẩu. Tắt hẳn bằng
+`--no-debug-log`.
 
 ### `.venv/bin/python: No such file or directory`
 

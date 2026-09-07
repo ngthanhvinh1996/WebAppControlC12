@@ -55,7 +55,7 @@ httpx and websockets.
 .venv/bin/python -m pytest
 ```
 
-Expect **524 passing** in roughly 45 seconds. The suite runs the simulator over
+Expect **548 passing** in roughly 45 seconds. The suite runs the simulator over
 real UDP sockets and a real uvicorn server, so a green run means the whole stack
 works on your machine — not just that the code imports.
 
@@ -122,6 +122,10 @@ so the camera state cache stays empty by design.
 - **Record session** — writes video, command traffic and attitude into
   `logs/sessions/<id>/` on one clock.
 - **Preflight** and **Sweep reads** — the network and protocol diagnostics.
+- **Debug log** — at the bottom of the page: the file to send when something
+  goes wrong, with a button to download it and one to mark the moment
+  (<kbd>M</kbd> does the same without leaving the controls). See
+  [Troubleshooting](#7-troubleshooting).
 
 ## 5. Run with a real C12
 
@@ -260,6 +264,10 @@ mean nothing has arrived yet. Check in this order:
 | `--packet-log` | — | write every TX/RX packet to a JSONL file |
 | `--record-fps` | `5` | recorded frames per second per stream |
 | `--no-gimbal` / `--no-telemetry` / `--no-camera` / `--no-record` | on | switch subsystems off |
+| `--debug-log` | `logs/debug/c12ctl.log` | where the debug log goes |
+| `--no-debug-log` | off | do not write a debug log at all |
+| `--debug-snapshot` | `10` | seconds between subsystem snapshots; `0` disables them |
+| `--debug-packets` | off | log every packet, including the 20 Hz speed traffic |
 
 > ⚠️ **The app has no authentication.** The default `--bind 127.0.0.1` accepts
 > connections from this machine only. Changing it to `--bind 0.0.0.0` — to reach
@@ -267,9 +275,55 @@ mean nothing has arrived yet. Check in this order:
 > to everyone on that network. Only do it on a network you control.
 
 Output goes under `logs/`: `logs/sessions/` for recordings,
-`logs/findings.jsonl` for the capability map. The whole directory is gitignored.
+`logs/findings.jsonl` for the capability map, `logs/debug/` for the debug log.
+The whole directory is gitignored.
 
 ## 7. Troubleshooting
+
+### First: send the debug log
+
+Every run writes one, at `logs/debug/c12ctl.log`. It is the fastest way to get a
+problem diagnosed by someone who was not standing at the bench, because it
+already answers what they would otherwise have to ask for:
+
+* **what was running** — version and git commit, board and OS, Python, which
+  OpenCV backends are compiled in, and every option the app was started with;
+* **what went over the link** — the packets, minus the 20 Hz speed traffic
+  (counted instead of printed) and identical repeats (folded, and printed again
+  once a minute so a quiet link is never mistaken for a dead one);
+* **a snapshot every 10 s** of the link, gimbal, telemetry, both video streams,
+  the camera cache, plus CPU, memory and SoC temperature — which is how a
+  thermal throttle or a stream that quietly died becomes visible;
+* **what happened in the browser** — ARM, mode switches, every commanded
+  vector, WebSocket drops, refused commands, JavaScript errors. The backend
+  cannot see any of that, and it is half of any "the gimbal did not move".
+
+While testing, press <kbd>M</kbd> the moment something looks wrong — or use
+**Mark this moment** in the *Debug log* panel at the bottom of the page, which
+takes a typed note. A mark writes a timestamp plus a full snapshot, so the
+reader knows where in the file to look.
+
+Then send the file. From the page, **Download the log** (it bundles the rotated
+parts too), or from a shell:
+
+```bash
+# on the board itself
+less logs/debug/c12ctl.log
+
+# over the network — exactly what the button downloads
+curl -s http://127.0.0.1:8000/api/debug/download -o c12-debug.log
+```
+
+Reading one back:
+
+```bash
+grep 'c12ctl.ui'      logs/debug/c12ctl.log   # what the operator did
+grep 'snap\[.*video'  logs/debug/c12ctl.log   # the video pipeline over time
+grep -E 'MARK|WARNING|ERROR' logs/debug/c12ctl.log
+```
+
+It rotates at 8 MB × 3 so it cannot fill the card, and it holds no credentials —
+IP addresses and command frames, nothing else. `--no-debug-log` turns it off.
 
 ### `.venv/bin/python: No such file or directory`
 

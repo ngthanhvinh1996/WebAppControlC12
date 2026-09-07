@@ -23,13 +23,17 @@ import contextlib
 import logging
 import re
 import signal
+import time
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .. import __version__, debuglog
+from ..debuglog import DebugLog
 from ..protocol import registry as reg
 from ..protocol.registry import COMMANDS, CommandNotAllowed
 from ..services import findings, preflight
@@ -76,6 +80,30 @@ class SessionRequest(BaseModel):
     note: str = ""
 
 
+class DebugEntry(BaseModel):
+    """One thing that happened in the browser."""
+
+    event: str = "?"
+    level: str = "info"
+    ms: float | None = None
+    """Milliseconds since the page loaded — orders events inside one batch."""
+
+    detail: Any = None
+
+
+class DebugBatch(BaseModel):
+    entries: list[DebugEntry] = Field(default_factory=list)
+
+
+class DebugMark(BaseModel):
+    note: str = ""
+
+
+MAX_UI_ENTRIES = 100
+"""Per request. The UI batches; a flood is a bug in the UI, not a reason to
+fill the operator's disk with it."""
+
+
 class Session:
     """Session state. In phase 0 this was only the ARM flag; phase 5 attached the
     watchdog to it."""
@@ -102,8 +130,9 @@ def create_app(link: UdpLink, session: Session,
                gimbal: GimbalController | None = None,
                telemetry: TelemetryService | None = None,
                camera: CameraService | None = None,
-               recorder: SessionRecorder | None = None) -> FastAPI:
-    app = FastAPI(title="C12 Ground Station", version="0.7.0")
+               recorder: SessionRecorder | None = None,
+               debug: DebugLog | None = None) -> FastAPI:
+    app = FastAPI(title="C12 Ground Station", version=__version__)
     app.state.link = link
     app.state.session = session
     app.state.findings_path = findings_path
@@ -112,6 +141,7 @@ def create_app(link: UdpLink, session: Session,
     app.state.telemetry = telemetry
     app.state.camera = camera
     app.state.recorder = recorder
+    app.state.debug = debug
 
     # ---------------------------------------------------------------- registry
 
@@ -403,6 +433,55 @@ def create_app(link: UdpLink, session: Session,
         return Response(content=data, media_type="image/jpeg",
                         headers={"Cache-Control": "no-store"})
 
+    # ------------------------------------------------------------------ debug
+    # The operator is at the bench and the reader is not. These endpoints exist
+    # so the whole story ends up in one file that can be sent.
+
+    def _debug() -> DebugLog:
+        if app.state.debug is None:
+            raise HTTPException(
+                status_code=503,
+                detail="the debug log is off — restart without --no-debug-log",
+            )
+        return app.state.debug
+
+    @app.get("/api/debug")
+    async def debug_status():
+        if app.state.debug is None:
+            return {"enabled": False}
+        return app.state.debug.as_dict()
+
+    @app.post("/api/debug/log")
+    async def debug_ui(body: DebugBatch):
+        """What happened in the browser: clicks, drops, JS errors.
+
+        The backend cannot see any of it, and a gimbal that stopped for a reason
+        that happened in a tab is unreadable without it.
+        """
+        return {"logged": _debug().ui(body.entries[:MAX_UI_ENTRIES])}
+
+    @app.post("/api/debug/mark")
+    async def debug_mark(body: DebugMark | None = None):
+        """Plant a timestamp at the moment something looked wrong."""
+        return {"marked": _debug().mark(body.note if body else "")}
+
+    @app.get("/api/debug/tail")
+    async def debug_tail(lines: int = 200):
+        return Response(content=_debug().tail(lines),
+                        media_type="text/plain; charset=utf-8",
+                        headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/debug/download")
+    async def debug_download():
+        """The live file plus every rotated part, in reading order — one download."""
+        name = "c12-debug-%s.log" % time.strftime("%Y%m%d-%H%M%S")
+        return StreamingResponse(
+            _debug().bundle(),
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="%s"' % name,
+                     "Cache-Control": "no-store"},
+        )
+
     # --------------------------------------------------------------- commands
 
     @app.post("/api/cmd/{name}")
@@ -567,6 +646,29 @@ def build_parser() -> argparse.ArgumentParser:
                          "Cannot be probed, since GSM has no reply")
     ap.add_argument("--telemetry-hz", type=int, default=10, metavar="HZ",
                     help="attitude push rate")
+
+    dbg = ap.add_argument_group(
+        "debug log",
+        "One file to send when reporting a problem: environment, packets, "
+        "periodic snapshots and what the browser did. On by default — a fault "
+        "on the bench rarely happens twice.",
+    )
+    dbg.add_argument("--debug-log", default=debuglog.DEFAULT_PATH, metavar="PATH",
+                     help="where the debug log is written")
+    dbg.add_argument("--no-debug-log", action="store_true",
+                     help="do not write a debug log at all")
+    dbg.add_argument("--debug-log-mb", type=float, default=debuglog.DEFAULT_MAX_MB,
+                     metavar="MB", help="rotate at this size")
+    dbg.add_argument("--debug-log-keep", type=int, default=debuglog.DEFAULT_BACKUPS,
+                     metavar="N", help="how many rotated parts to keep")
+    dbg.add_argument("--debug-snapshot", type=float,
+                     default=debuglog.DEFAULT_SNAPSHOT, metavar="SEC",
+                     help="period of the subsystem snapshot. 0 disables it")
+    dbg.add_argument("--debug-packets", action="store_true",
+                     help="log every packet. Off by default: the speed "
+                          "commands alone are 40 lines a second, so they are "
+                          "counted instead — the first few of each command "
+                          "word are always written")
     ap.add_argument("-v", "--verbose", action="store_true")
     return ap
 
@@ -576,11 +678,23 @@ async def _run(args) -> None:
 
     reg.assert_registry_sane()
 
+    # Before anything that can fail: a port that will not bind is exactly the
+    # kind of start-up failure the file has to contain.
+    debug = None
+    if not args.no_debug_log:
+        debug = DebugLog(
+            args.debug_log, max_mb=args.debug_log_mb, backups=args.debug_log_keep,
+            snapshot_s=args.debug_snapshot, packets=args.debug_packets,
+        ).install()
+        debug.header(args, host=args.host)
+
     link = UdpLink(
         args.host, args.port, args.local_port,
         dry_run=args.dry_run, log_path=args.packet_log,
     )
     await link.start()
+    if debug is not None:
+        debug.attach_link(link)
     session = Session(max_speed=args.max_speed)
 
     video = None
@@ -637,10 +751,23 @@ async def _run(args) -> None:
 
     app = create_app(link, session, findings_path=args.findings, video=video,
                      gimbal=gimbal, telemetry=telemetry, camera=camera,
-                     recorder=recorder)
+                     recorder=recorder, debug=debug)
+
+    if debug is not None:
+        debug.watch(link=link, gimbal=gimbal, telemetry=telemetry, video=video,
+                    camera=camera)
+        await debug.start()
 
     config = uvicorn.Config(app, host=args.bind, port=args.http_port,
                             log_level="debug" if args.verbose else "info")
+    if debug is not None:
+        # uvicorn's own dictConfig replaces the handlers on these loggers, so
+        # attach after it has run or the HTTP side — including the traceback of
+        # a request that failed — would be missing from the file.
+        with contextlib.suppress(Exception):
+            config.load()
+        for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+            debug.attach_logger(name)
     server = uvicorn.Server(config)
 
     loop = asyncio.get_running_loop()
@@ -680,6 +807,9 @@ async def _run(args) -> None:
         await link.close()
         if video is not None:
             await video.close()
+        # Last, so the closing snapshot still reports on everything above.
+        if debug is not None:
+            await debug.close()
 
 
 def main() -> None:

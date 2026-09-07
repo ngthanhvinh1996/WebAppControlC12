@@ -404,13 +404,47 @@ gian (mặc định 1 giờ), và ghi rõ cái nào đã cắt. Đầy thẻ gi�
 là kết cục tệ hơn nhiều so với một bản ghi kết thúc sớm và nói rõ lý do. Chỉnh
 bằng `--record-max-mb` và `--record-max-seconds`; tắt hẳn bằng `--no-record`.
 
+## Debug log
+
+Camera nằm ở một cái bàn khác, và thứ duy nhất đi được về phía người chẩn đoán là
+một file. Nên mỗi lần chạy app ghi sẵn `logs/debug/c12ctl.log` — bật mặc định,
+vì một sự cố trên bàn thử hiếm khi lặp lại lần hai.
+
+Bốn thứ trong đó, tương ứng bốn câu hỏi người đọc chắc chắn sẽ hỏi:
+
+| Trong file | Trả lời cho |
+|---|---|
+| version, git commit, board, OS, backend của cv2, **mọi** tham số khởi động | "lúc đó anh chạy cái gì?" — một nửa số báo cáo dừng ở đây |
+| gói TX/RX, trừ luồng 20 Hz (chỉ đếm) và gói lặp y hệt (gộp) | "đã gửi gì ngay trước lúc đó?" |
+| `snap[n]` mỗi 10 s: link, gimbal, telemetry, video, camera, CPU, RAM, nhiệt độ SoC | "nó hỏng dần hay hỏng đột ngột?" |
+| sự kiện từ trình duyệt: ARM, đổi mode, từng vector đã lệnh, WS rớt, lỗi JS | "người vận hành đã bấm gì?" — backend không thấy được |
+
+Hai quyết định đáng nói:
+
+**Chi tiết nằm ở mức DEBUG, console vẫn chỉ một dòng.** File nhận DEBUG nên giữ
+đủ mọi thứ; terminal chỉ in đúng một dòng nói file nằm ở đâu. Một debug log mà
+không ai chịu nổi để bật thì không phải debug log — lúc cần sẽ không có nó.
+
+**Lặp thì gộp, đổi thì in.** Bộ đệm camera đọc lại đúng bốn thanh ghi mỗi giây
+đến vô tận; in hết thì chôn mất dòng duy nhất đáng đọc là cái đọc có **câu trả
+lời thay đổi**. Gói lặp vẫn được in lại mỗi phút một lần, để một link im vì
+không có gì đổi không bị nhầm với một link đã chết.
+
+Phím <kbd>M</kbd> đóng mốc thời gian kèm một lần chụp toàn bộ trạng thái, ngay
+lúc đang bay — mốc đó biến "đâu đó trong một tiếng vừa rồi" thành một mốc chính
+xác, do người đang nhìn gimbal chứ không nhìn log đánh dấu. Khung *Debug log*
+cuối trang có nút tải file về (gộp cả các phần đã xoay vòng).
+
+Xoay vòng ở 8 MB × 3. Tắt bằng `--no-debug-log`, đổi nhịp chụp bằng
+`--debug-snapshot`, ghi đủ mọi gói bằng `--debug-packets`.
+
 ## Test
 
 ```bash
 .venv/bin/python -m pytest
 ```
 
-524 test. Bao gồm 43 literal đã kiểm chứng từ cả hai tài liệu nguồn làm ca vàng cho
+548 test. Bao gồm 43 literal đã kiểm chứng từ cả hai tài liệu nguồn làm ca vàng cho
 codec, property test cho bộ mã hoá, và integration test chạy qua socket thật với
 simulator.
 
@@ -487,6 +521,7 @@ c12ctl/
 ├── services/gimbal.py     vòng 20 Hz, watchdog, giới hạn mềm
 ├── services/camera.py     đệm trạng thái + lệnh ghi có xác nhận
 ├── services/session.py    ghi phiên đồng bộ video + lệnh + tư thế
+├── debuglog.py            một file để gửi đi: môi trường, gói, snapshot, UI
 ├── web/app.py             FastAPI + cổng rủi ro + WS điều khiển
 └── sim/c12_sim.py         camera giả lập
 ```

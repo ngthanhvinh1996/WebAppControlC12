@@ -276,6 +276,16 @@
             word-break: break-word; }
   #c-last .tag { margin-right: 6px; }
 
+  /* debug log */
+  a.btn { display: inline-block; text-decoration: none; font-size: 14px;
+          padding: 6px 13px; border-radius: 5px; border: 1px solid var(--rule);
+          background: var(--sunk); color: var(--ink); }
+  a.btn:hover { border-color: var(--accent); color: var(--accent); }
+  #d-out { margin: 12px 0 0; padding: 10px 12px; background: var(--sunk);
+           border-radius: 5px; font-family: "IBM Plex Mono", monospace;
+           font-size: 11.5px; line-height: 1.5; max-height: 340px;
+           overflow: auto; white-space: pre; }
+
   /* session recording */
   button.rec.live { background: var(--bad-bg); border-color: var(--bad); color: var(--bad);
                     font-weight: 600; }
@@ -416,6 +426,32 @@
     <div id="ses-list"></div>
   </div>
 
+  <div id="dbg-wrap" class="hide">
+    <h2>Debug log</h2>
+    <p class="note">
+      One file for someone who was not at the bench: what was running (version,
+      board, decoder, every option), what went over the link, a snapshot of the
+      gimbal, video, camera and CPU every few seconds — and what happened in
+      <b>this browser</b>, which the server cannot see. Mark the moment
+      something looks wrong — <kbd>M</kbd> at any time, or the button below for
+      a typed note — then send the file.
+    </p>
+    <div class="pad">
+      <div class="row">
+        <button id="d-mark">Mark this moment</button>
+        <a id="d-dl" class="btn" href="/api/debug/download">Download the log</a>
+        <button id="d-tail">Show the end of it</button>
+      </div>
+      <dl class="kv">
+        <dt>File</dt><dd id="d-path">—</dd>
+        <dt>Size</dt><dd id="d-size">—</dd>
+        <dt>Snapshots</dt><dd id="d-snap">—</dd>
+        <dt>Running for</dt><dd id="d-up">—</dd>
+      </dl>
+      <pre id="d-out" class="hide"></pre>
+    </div>
+  </div>
+
   <div id="pre-wrap" class="hide">
     <h2>Preflight</h2>
     <div class="cards" id="pre"></div>
@@ -438,6 +474,46 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+// ------------------------------------------------------------------- debug
+// The server cannot see a click, a dropped WebSocket or a JS exception, and
+// those are half of any "the gimbal did not move" report. Everything the
+// browser knows is batched into the server's debug log, landing on the same
+// clock as the packets that went out because of it.
+let dbgOn = false, dbgQueue = [], dbgT0 = performance.now();
+const DBG_MAX = 200;   // with no server to send them to, the queue still ends
+
+function dbg(event, detail, level) {
+  if (dbgQueue.length >= DBG_MAX) dbgQueue.shift();
+  dbgQueue.push({ event, level: level || "info", detail: detail ?? null,
+                  ms: Math.round(performance.now() - dbgT0) });
+}
+
+async function flushDbg(beacon) {
+  if (!dbgOn || !dbgQueue.length) return;
+  const body = JSON.stringify({ entries: dbgQueue.splice(0, 100) });
+  // A closing tab gets no time for fetch — and a closing tab is exactly when
+  // the WebSocket drops and the backend stops the gimbal, so that last batch
+  // is the one worth keeping.
+  if (beacon && navigator.sendBeacon) {
+    navigator.sendBeacon("/api/debug/log",
+                         new Blob([body], { type: "application/json" }));
+    return;
+  }
+  try {
+    await fetch("/api/debug/log", {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    });
+  } catch (e) { /* the log must never become an error path of its own */ }
+}
+
+// Installed at parse time, not in init(): an exception thrown while the page is
+// still starting up is the one most worth catching.
+addEventListener("error", e => dbg("js-error",
+  { message: e.message, src: e.filename, line: e.lineno }, "error"));
+addEventListener("unhandledrejection", e => dbg("js-rejection",
+  { reason: String(e.reason).slice(0, 300) }, "error"));
+addEventListener("pagehide", () => { dbg("page-hidden"); flushDbg(true); });
+
 const say = m => { clearWarn(); $("#status").textContent = m; };
 
 // A refused command is not a status update. It gets the line, a colour, and a
@@ -445,6 +521,7 @@ const say = m => { clearWarn(); $("#status").textContent = m; };
 // a control that does nothing needs to be told why, next to the fix.
 let warnTimer = null;
 function warn(text) {
+  dbg("warning", text, "warn");
   $("#status").textContent = "⚠ WARNING: " + text;
   $("#status").classList.add("warn");
   $("#btn-arm").classList.add("nag");
@@ -532,6 +609,10 @@ function render(b) {
       <div class="cap"><span>${esc(label)}</span><span class="m" id="m-${name}"></span></div>
     </div>`;
   }).join("");
+  // A stream that will not load looks exactly like a stream with no frames yet.
+  // The <img> knows the difference, and nothing else on this page does.
+  for (const img of $("#views").querySelectorAll("img"))
+    img.onerror = () => dbg("video-img-error", { src: img.getAttribute("alt") }, "warn");
   syncOverlay();
 }
 
@@ -566,6 +647,7 @@ async function poll() {
 
 $("#btn-video").onclick = async () => {
   videoOn = !videoOn;
+  dbg("video-toggle", { on: videoOn });
   $("#btn-video").classList.toggle("on", videoOn);
   render(await (await fetch("/api/video")).json());
   say(videoOn ? "Video on." : "Video off — the server encoder sleeps too.");
@@ -573,12 +655,14 @@ $("#btn-video").onclick = async () => {
 
 $("#btn-layout").onclick = async () => {
   layout = layout === "side" ? "pip" : "side";
+  dbg("layout", { layout });
   $("#btn-layout").textContent = "Layout: " + (layout === "side" ? "side by side" : "PiP");
   render(await (await fetch("/api/video")).json());
 };
 
 $("#btn-ovl").onclick = () => {
   overlayOn = !overlayOn;
+  dbg("overlay", { on: overlayOn });
   // Hiding a held control kills the release that zeroes it, and the gimbal
   // would keep turning against a widget nobody can see. Keys are left alone —
   // the keyboard still works while the overlay is folded away.
@@ -596,8 +680,87 @@ $("#sel-cmap").onchange = async e => {
     body: JSON.stringify({ colormap: v || null }),
   });
   const b = await r.json();
+  dbg("colormap", { colormap: b.colormap });
   say(b.colormap ? `Server-side colormap: ${b.colormap}.`
                  : "Server colormap off — letting the camera colorize via IMG.");
+};
+
+// ------------------------------------------------------------ debug panel
+
+async function initDebug() {
+  let b;
+  try { b = await (await fetch("/api/debug")).json(); }
+  catch (e) { b = { enabled: false }; }
+  if (!b.enabled) { dbgQueue = []; return; }
+  dbgOn = true;
+  $("#dbg-wrap").classList.remove("hide");
+  setInterval(() => flushDbg(), 2000);
+  setInterval(refreshDebug, 5000);
+  // The environment on the browser's side of the wire. The server logs its own;
+  // a mismatch between the two is itself a finding — a phone on the wrong Wi-Fi
+  // reaches the page and nothing else.
+  dbg("boot", {
+    ua: navigator.userAgent, url: location.href, clock: new Date().toString(),
+    viewport: innerWidth + "x" + innerHeight, dpr: devicePixelRatio,
+    screen: screen.width + "x" + screen.height, lang: navigator.language,
+  });
+  renderDebug(b);
+}
+
+const fmtDur = s => s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`
+  : s >= 60 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${Math.round(s)}s`;
+
+function renderDebug(b) {
+  if (!b || !b.enabled) return;
+  $("#d-path").textContent = b.path
+    + (b.files.length > 1 ? ` (+${b.files.length - 1} rotated)` : "");
+  $("#d-size").textContent = `${(b.size_bytes / 1024).toFixed(1)} KB of `
+    + `${b.max_mb} MB × ${b.backups}`;
+  $("#d-snap").textContent = `${b.snapshots} · every ${b.snapshot_s}s · `
+    + `packets ${b.packets}`;
+  $("#d-up").textContent = fmtDur(b.uptime_s);
+}
+
+async function refreshDebug() {
+  try { renderDebug(await (await fetch("/api/debug")).json()); }
+  catch (e) { /* server is down — the panel keeps the last numbers */ }
+}
+
+async function mark(note) {
+  // Flush first: the clicks that led to this moment belong ABOVE the mark, not
+  // in the batch that arrives after it.
+  dbg("mark", note);
+  await flushDbg();
+  const r = await fetch("/api/debug/mark", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ note }),
+  });
+  say(r.ok ? "Marked in the log, with a snapshot of every subsystem."
+           : "Could not mark — the debug log is off.");
+  await refreshDebug();
+}
+
+$("#d-mark").onclick = () =>
+  mark((prompt("What just happened? It goes into the log.") || "").slice(0, 200));
+
+// M marks without taking a hand off the controls — the moment to mark is while
+// it is happening, not after scrolling to a button. Never while typing in the
+// note prompt or a field, and clear of the keys that fly (WASD/arrows) and the
+// ones that stop (Space/Esc).
+addEventListener("keydown", e => {
+  if (e.key !== "m" && e.key !== "M") return;
+  if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (/^(input|textarea|select)$/i.test(document.activeElement?.tagName || "")) return;
+  mark("keyboard");
+});
+
+$("#d-tail").onclick = async () => {
+  const out = $("#d-out");
+  const r = await fetch("/api/debug/tail?lines=200");
+  out.textContent = (await r.text()) || "(empty)";
+  out.classList.remove("hide");
+  out.scrollTop = out.scrollHeight;
+  await refreshDebug();
 };
 
 // ---------------------------------------------------------- diagnostics
@@ -614,6 +777,8 @@ async function preflight() {
         ${c.fix ? `<div class="f">${esc(c.fix)}</div>` : ""}
       </div>`).join("");
     const bad = b.checks.filter(c => c.status === "fail").length;
+    dbg("preflight", b.checks.map(c => `${c.name}=${c.status}`).join(" "),
+        bad ? "warn" : "info");
     say(bad ? `${bad} check(s) failed — fix them before sweeping commands.`
             : "Preflight clean.");
   } finally { busy(false); }
@@ -641,11 +806,15 @@ async function sweep() {
         ${s.map(p => `<div>· <code>${esc(p.name)}</code> — ${esc(p.note)}</div>`).join("")}
       </div>` : "";
     $("#saved").textContent = b.saved_to ? "Written to " + b.saved_to : "";
+    dbg("sweep", { alive: b.alive, total: b.total, silent: b.silent,
+                   surprises: b.surprises,
+                   quiet: b.probes.filter(p => !p.alive).map(p => p.name) });
     say(`${b.alive}/${b.total} answered, ${b.silent} silent, ${b.surprises} unexpected.`);
   } finally { busy(false); }
 }
 
 async function stop() {
+  dbg("STOP", { armed, cmd }, "warn");
   // Clear every held input BEFORE sending, or the next tick sends speed again.
   clearInputs();
   cmd = { yaw: 0, pitch: 0 };
@@ -685,6 +854,8 @@ async function toggleRecord() {
     method: "POST", headers: { "content-type": "application/json" }, body,
   });
   const b = await r.json();
+  dbg("record", { path, ok: r.ok, id: b.id, recording: b.recording,
+                  detail: b.detail });
   if (!r.ok) { say(b.detail || "Recording request refused."); return; }
   say(b.recording
     ? `Recording ${b.id} — video, commands and attitude on one clock.`
@@ -809,7 +980,15 @@ async function camApply(action, args = []) {
       body: JSON.stringify({ args }),
     });
     const b = await r.json();
-    if (!r.ok) { say(b.detail || "Command refused."); return null; }
+    if (!r.ok) {
+      dbg("camera-refused", { action, status: r.status, detail: b.detail }, "warn");
+      say(b.detail || "Command refused."); return null;
+    }
+    // ok=false is a camera that answered and did not change — the single most
+    // useful line in a "this button does nothing" report.
+    dbg("camera", { action, args, ok: b.ok, frame: b.frame, actual: b.actual,
+                    expected: b.expected, ms: b.elapsed_ms, note: b.note },
+        b.ok === true ? "info" : "warn");
     showApply(b);
     if (b.ok === false)
       say(`${b.command}: read-back still shows ${fmt(b.actual)} — no effect yet.`);
@@ -817,6 +996,7 @@ async function camApply(action, args = []) {
       say(`${b.command}: could not be verified. ${b.note}`);
     return b;
   } catch (e) {
+    dbg("camera-failed", { action, error: String(e) }, "error");
     say("Could not send the camera command.");
     return null;
   } finally {
@@ -891,13 +1071,17 @@ async function pollCamera() {
 function connectWS() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   ws = new WebSocket(`${proto}//${location.host}/ws/control`);
-  ws.onopen = () => $("#v-ws").textContent = "connected";
-  ws.onclose = () => {
+  ws.onopen = () => { dbg("ws-open"); $("#v-ws").textContent = "connected"; };
+  ws.onclose = e => {
+    // Path three of the emergency stop, seen from the side that caused it: the
+    // backend only records "WebSocket closed", never why.
+    dbg("ws-close", { code: e.code, reason: e.reason, clean: e.wasClean }, "warn");
     $("#v-ws").textContent = "dropped — the gimbal was stopped";
     setArmedUI(false);
     setTimeout(connectWS, 1500);
   };
-  ws.onerror = () => $("#v-ws").textContent = "error";
+  ws.onerror = () => { dbg("ws-error", null, "error");
+                       $("#v-ws").textContent = "error"; };
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
     if (m.type === "status") renderStatus(m);
@@ -911,6 +1095,10 @@ function connectWS() {
 const send = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
 
 function setArmedUI(on) {
+  // Only the fact, never a guess at who caused it: the click is logged where it
+  // happens, and the two lines next to each other say more than an attribution
+  // this function is not in a position to make.
+  if (on !== armed) dbg("armed", { armed: on });
   armed = on;
   if (!on) userDisarm = false;
   $("#btn-arm").classList.toggle("armed", on);
@@ -933,8 +1121,10 @@ function renderStatus(m) {
   if (m.armed !== armed) {
     // The server disarmed us on its own. Say why — a button that silently flips
     // back to ARM looks like a broken button, not like a safety system working.
-    if (!m.armed && !userDisarm && m.stats.last_stop_reason)
+    if (!m.armed && !userDisarm && m.stats.last_stop_reason) {
+      dbg("server-disarm", m.stats.last_stop_reason, "warn");
       say("Disarmed by the server — " + m.stats.last_stop_reason + ".");
+    }
     setArmedUI(m.armed);
   }
 
@@ -961,6 +1151,11 @@ function pushState() {
   // Asking while disarmed is refused by the server, so the control must not
   // light up as if it had worked.
   const blocked = moving && !armed;
+  // Every commanded vector, with what asked for it. Paired with the packets the
+  // backend logs, this is what shows an axis that was commanded and did not move.
+  dbg("cmd", { yaw: v.yaw, pitch: v.pitch, mode, armed, blocked,
+               src: padVec ? "pad" : stickVec ? "stick" : keys.size ? "keys"
+                    : moving ? "gamepad" : "released" });
   $("#stick").classList.toggle("live", moving && !blocked);
   $("#stick").classList.toggle("blocked", blocked);
   // Light the arrows from the vector that was actually sent, not from the
@@ -1039,9 +1234,15 @@ addEventListener("keyup", e => {
 
 // Alt-tab while holding a key or a button: the release will NEVER arrive. A
 // real scenario.
-addEventListener("blur", () => { clearInputs(); pushState(); });
+addEventListener("blur", () => {
+  dbg("inputs-cleared", "window lost focus");
+  clearInputs(); pushState();
+});
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) { clearInputs(); pushState(); }
+  if (document.hidden) {
+    dbg("inputs-cleared", "tab hidden");
+    clearInputs(); pushState();
+  }
 });
 
 const stick = $("#stick");
@@ -1078,6 +1279,7 @@ for (const b of document.querySelectorAll("#dpad button")) {
 
 function setMode(next) {
   mode = next;
+  dbg("mode", { mode });
   // Switching away from a held control is the same trap as hiding the overlay:
   // the release event never arrives at an element that is gone.
   stickVec = padVec = null;
@@ -1096,12 +1298,17 @@ $("#m-stick").onclick = () => setMode("stick");
 $("#m-pad").onclick = () => setMode("pad");
 
 $("#btn-arm").onclick = () => {
+  dbg("arm-click", { want: armed ? "disarm" : "arm" });
   if (armed) userDisarm = true;
   send({ type: armed ? "disarm" : "arm" });
 };
+let speedLog = null;
 $("#rng-speed").oninput = async e => {
   maxSpeed = parseFloat(e.target.value);
   $("#lbl-speed").textContent = maxSpeed.toFixed(1);
+  // One line per adjustment, not one per step of the drag.
+  clearTimeout(speedLog);
+  speedLog = setTimeout(() => dbg("max-speed", { max_speed: maxSpeed }), 400);
   await fetch("/api/gimbal/max-speed", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ max_speed: maxSpeed }),
@@ -1110,6 +1317,10 @@ $("#rng-speed").oninput = async e => {
 
 async function initGimbal() {
   const b = await (await fetch("/api/gimbal")).json();
+  // Which features this server was started with. Explains most of what a
+  // screenshot cannot: a missing panel is a flag, not a broken page.
+  dbg("features", { gimbal: b.enabled, video: streams, camera: camReady,
+                    record: !$("#btn-rec").disabled });
   if (!b.enabled) {
     $("#ctl-off").classList.remove("hide");
     disable("#btn-ovl");
@@ -1126,7 +1337,8 @@ async function initGimbal() {
   startHeartbeat();
 }
 
-initVideo().then(initCamera).then(initSession).then(initGimbal)
+// Debug first: whatever the rest of the boot does, it is then on record.
+initDebug().then(initVideo).then(initCamera).then(initSession).then(initGimbal)
   .then(() => say("Ready."));
 setInterval(poll, 1000);
 setInterval(pollCamera, 1000);
