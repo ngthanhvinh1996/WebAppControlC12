@@ -274,9 +274,25 @@ def create_app(link: UdpLink, session: Session,
 
                 if kind == "state":
                     try:
-                        state = ctrl.set_speed(
-                            float(msg.get("yaw", 0)), float(msg.get("pitch", 0))
-                        )
+                        yaw = float(msg.get("yaw", 0))
+                        pitch = float(msg.get("pitch", 0))
+                    except (TypeError, ValueError) as exc:
+                        await ws.send_json({"type": "error", "detail": str(exc)})
+                        continue
+
+                    # Letting go of a control asks for no motion at all, and it
+                    # arrives as the same "state" message as a real command. So
+                    # refusing it raised a second warning — about the release,
+                    # not the press — and counted a refusal that never asked for
+                    # anything. Nothing to command here, so nothing to refuse.
+                    # The interlock is untouched: set_speed still turns away
+                    # every request that would move the gimbal.
+                    if not ctrl.armed and not (yaw or pitch):
+                        await ws.send_json({"type": "state", **ctrl.state.as_dict()})
+                        continue
+
+                    try:
+                        state = ctrl.set_speed(yaw, pitch)
                     except NotArmed as exc:
                         await ws.send_json({"type": "rejected", "detail": str(exc)})
                         continue

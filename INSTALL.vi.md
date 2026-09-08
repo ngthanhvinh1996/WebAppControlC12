@@ -54,7 +54,7 @@ websockets.
 .venv/bin/python -m pytest
 ```
 
-Phải thấy **548 test xanh** trong khoảng 45 giây. Bộ test chạy simulator qua
+Phải thấy **549 test xanh** trong khoảng 45 giây. Bộ test chạy simulator qua
 socket UDP thật và một server uvicorn thật, nên xanh nghĩa là **cả stack chạy
 được trên máy bạn**, chứ không chỉ là code import được.
 
@@ -102,7 +102,8 @@ lệnh; không có ai trả lời nên đệm trạng thái camera sẽ rỗng �
   là chốt an toàn thật chứ không phải một bước giao diện. Nếu điều khiển khi
   chưa ARM, giao diện hiện một dòng **WARNING** kèm đúng lý do server trả về,
   cần/mũi tên chuyển **đỏ** thay vì sáng lên như thể đã ăn lệnh, và nút ARM nhấp
-  nháy. Thẻ **Refused** đếm số lệnh đã bị bỏ.
+  nháy. Thẻ **Refused** đếm số lệnh đã bị bỏ — chỉ tính lúc bấm: lúc nhả tay
+  không đòi chuyển động nào, nên không cảnh báo và cũng không tính.
 
   Hai mode nhập liệu dùng chung một đường lệnh — cả hai đều quy về cặp tốc độ
   `GSY`/`GSP`, nên watchdog, soft limit và STOP hành xử y hệt nhau:

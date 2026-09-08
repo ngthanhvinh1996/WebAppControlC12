@@ -55,7 +55,7 @@ httpx and websockets.
 .venv/bin/python -m pytest
 ```
 
-Expect **548 passing** in roughly 45 seconds. The suite runs the simulator over
+Expect **549 passing** in roughly 45 seconds. The suite runs the simulator over
 real UDP sockets and a real uvicorn server, so a green run means the whole stack
 works on your machine — not just that the code imports.
 
@@ -105,7 +105,8 @@ so the camera state cache stays empty by design.
   session is not armed, so ARM is a real interlock, not a UI step. Move the
   control before arming and you get a **WARNING** line carrying the server's own
   reason, the control turns red instead of lighting up as though it worked, and
-  ARM pulses. The **Refused** card counts how many commands were dropped.
+  ARM pulses. The **Refused** card counts how many commands were dropped —
+  presses only: letting go asks for no motion, so it neither warns nor counts.
 
   Two input modes share one command path — both end up in the same `GSY`/`GSP`
   speed pair, so the watchdog, the soft limits and STOP behave identically:

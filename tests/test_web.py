@@ -432,6 +432,31 @@ async def test_ws_requires_arm_before_moving(gclient):
     assert gclient.sim.state.yaw_speed == 0
 
 
+async def test_letting_go_while_not_armed_is_not_a_refusal(gclient):
+    """Releasing a control asks for no motion, so it must not warn or count.
+
+    It travels as the same "state" message as a real command, and refusing it
+    put a second WARNING on the screen — about the release, not about the press
+    that earned the first one.
+    """
+    import json
+
+    async with await _ws(gclient.ws_url) as ws:
+        await ws.send(json.dumps({"type": "state", "yaw": 0, "pitch": 0}))
+        rejected = False
+        for _ in range(25):
+            msg = json.loads(await ws.recv())
+            if msg["type"] == "rejected":
+                rejected = True
+                break
+            if msg["type"] == "state":
+                break
+        assert not rejected, "a zero vector commands nothing — nothing to refuse"
+        assert msg == {"type": "state", "yaw": 0.0, "pitch": 0.0}
+    assert gclient.ctrl.stats.rejected == 0, "and the Refused count stays honest"
+    assert not gclient.ctrl.armed, "while the interlock itself does not move"
+
+
 async def test_ws_arm_then_move(gclient):
     import asyncio
     import json

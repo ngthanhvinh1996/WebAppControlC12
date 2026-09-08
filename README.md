@@ -444,7 +444,7 @@ Xoay vòng ở 8 MB × 3. Tắt bằng `--no-debug-log`, đổi nhịp chụp b�
 .venv/bin/python -m pytest
 ```
 
-548 test. Bao gồm 43 literal đã kiểm chứng từ cả hai tài liệu nguồn làm ca vàng cho
+549 test. Bao gồm 43 literal đã kiểm chứng từ cả hai tài liệu nguồn làm ca vàng cho
 codec, property test cho bộ mã hoá, và integration test chạy qua socket thật với
 simulator.
 
