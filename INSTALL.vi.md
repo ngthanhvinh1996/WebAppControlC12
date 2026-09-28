@@ -398,6 +398,7 @@ việc phần WebRTC của pha 6 có đáng làm hay không; xem [NEXT.md](NEXT.
 
 | | |
 |---|---|
+| [SO_TAY_C12.md](SO_TAY_C12.md) | tra nhanh: gói tin, bảng lệnh, cách gửi, cách test |
 | [README.md](README.md) | từng pha làm gì và vì sao, kèm số đo |
 | [NEXT.md](NEXT.md) | trạng thái hiện tại và việc kế tiếp |
 | [PLAN_WEBAPP_C12.md](PLAN_WEBAPP_C12.md) | phân tích giao thức, kiến trúc, lộ trình 7 pha |

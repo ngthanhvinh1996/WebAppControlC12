@@ -404,6 +404,7 @@ see [NEXT.md](NEXT.md).
 
 | | |
 |---|---|
+| [SO_TAY_C12.md](SO_TAY_C12.md) | quick reference: frame format, command table, how to send, how to test |
 | [README.md](README.md) | what each phase does and why, with the measurements |
 | [NEXT.md](NEXT.md) | current state and what to do next |
 | [PLAN_WEBAPP_C12.md](PLAN_WEBAPP_C12.md) | protocol analysis, architecture, the 7-phase roadmap |

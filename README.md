@@ -9,6 +9,8 @@ lộ trình 7 pha.
 
 > 📖 Hướng dẫn build & chạy đầy đủ cho người mới clone về:
 > **[INSTALL.vi.md](INSTALL.vi.md)** · **[INSTALL.md](INSTALL.md)** (English)
+>
+> 🔖 Tra nhanh gói tin, bảng lệnh, cách gửi, cách test: **[SO_TAY_C12.md](SO_TAY_C12.md)**
 
 ```bash
 sudo apt install -y git python3-venv python3-opencv
