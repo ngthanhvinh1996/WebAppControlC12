@@ -412,6 +412,52 @@ async def test_soft_limit_still_allows_retreat(rig_tel):
     assert rig_tel.sim.state.yaw_speed < 0
 
 
+async def _tel_rig(yaw_dir):
+    sim = C12Simulator(seed=13, yaw_dir=yaw_dir)
+    await sim.start("127.0.0.1", 0)
+    link = UdpLink("127.0.0.1", sim.port, local_port=0, min_tx_gap=0.001)
+    await link.start()
+    tel = TelemetryService(link, rate_hz=40, rearm_interval=0.2, stale_after=0.2)
+    await tel.start()
+    ctrl = GimbalController(link, max_speed=30.0, telemetry=tel,
+                            tick=FAST_TICK, watchdog=FAST_WATCHDOG,
+                            soft_limit=45.0)
+    await ctrl.start()
+    for _ in range(60):
+        await asyncio.sleep(0.02)
+        if tel.fresh:
+            break
+
+    async def close():
+        await ctrl.close()
+        await tel.close()
+        await link.close()
+        await sim.close()
+    return ctrl, sim, close
+
+
+@pytest.mark.parametrize("yaw_dir", [1, -1])
+async def test_soft_limit_works_whichever_way_yaw_is_reported(yaw_dir):
+    """Drive into the limit, then back out — for both sign conventions.
+
+    On the bench the C12 reached -90° and then refused the way back: the limit
+    assumed +speed means +angle. It must not assume anything."""
+    ctrl, sim, close = await _tel_rig(yaw_dir)
+    try:
+        ctrl.arm()
+        await drive(ctrl, 25, 0, 2.6)          # well past the 45° limit at 25 °/s
+        assert ctrl.axis_dir["yaw"] == yaw_dir
+        assert ctrl.stats.limit_trips >= 1
+        assert 45.0 <= abs(sim.state.yaw) < 50.0   # stopped short of the stop
+        assert sim.state.yaw_speed == 0
+
+        edge = sim.state.yaw
+        await drive(ctrl, -25, 0, 0.3)         # and the way back is open
+        assert abs(sim.state.yaw) < abs(edge) - 3.0
+    finally:
+        await close()
+
+
 async def test_stale_telemetry_does_not_gate_motion(rig_tel):
     """A stale attitude must NOT gate — false safety is worse than no gating."""
     for _ in range(60):

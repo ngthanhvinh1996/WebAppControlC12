@@ -48,6 +48,11 @@ path work."""
 SOFT_LIMIT_DEG = 85.0
 """Stop short of the ±90° mechanical limit when a real attitude is available."""
 
+LEARN_DEG = 1.0
+"""How far the attitude has to move under one command before we trust which
+way that axis turns. No document says whether +speed makes the reported angle
+grow or shrink, so it is measured, not assumed."""
+
 
 @dataclass
 class ControlState:
@@ -120,6 +125,12 @@ class GimbalController:
         self._task: asyncio.Task | None = None
         self._last_sent: tuple[float, float] | None = None
         self._zeros_left = 0
+
+        # Per axis: +1 if a positive speed makes the reported angle grow, -1 if
+        # it makes it shrink, None until seen. The soft limit needs this to
+        # tell "further past the edge" from "back toward centre".
+        self.axis_dir: dict[str, int | None] = {"yaw": None, "pitch": None}
+        self._learn_ref: dict[str, tuple[int, float] | None] = {"yaw": None, "pitch": None}
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -226,6 +237,13 @@ class GimbalController:
         A stale attitude is **not** used to gate: gating on an expired reading is
         more dangerous than not gating at all, because it creates a false sense
         of safety.
+
+        Which command is "outward" comes from :attr:`axis_dir`, measured on the
+        real gimbal. Assuming +speed means +angle blocked the way *back* on a
+        C12 whose yaw reports the other way round, and left it stuck at the
+        mechanical stop. Until an axis has been seen to move, nothing is gated
+        on it: the first :data:`LEARN_DEG` of motion teaches the direction, and
+        from then on the outward command is cut.
         """
         tel = self.telemetry
         if tel is None or not tel.fresh or tel.attitude is None:
@@ -233,17 +251,47 @@ class GimbalController:
 
         att = tel.attitude
         limited = False
-        if pitch and abs(att.pitch) >= self.soft_limit:
-            if (pitch > 0) == (att.pitch > 0):
-                pitch, limited = 0.0, True
-        if yaw and abs(att.yaw) >= self.soft_limit:
-            if (yaw > 0) == (att.yaw > 0):
-                yaw, limited = 0.0, True
+        if self._outward("pitch", pitch, att.pitch):
+            pitch, limited = 0.0, True
+        if self._outward("yaw", yaw, att.yaw):
+            yaw, limited = 0.0, True
         if limited:
             self.stats.limit_trips += 1
             log.warning("soft limit: yaw=%.1f pitch=%.1f reached ±%.0f°",
                         att.yaw, att.pitch, self.soft_limit)
         return yaw, pitch
+
+    def _outward(self, axis: str, speed: float, angle: float) -> bool:
+        """True if ``speed`` would drive ``angle`` further past the soft limit."""
+        direction = self.axis_dir[axis]
+        if not speed or direction is None or abs(angle) < self.soft_limit:
+            return False
+        return (speed * direction > 0) == (angle > 0)
+
+    def _learn_direction(self, yaw: float, pitch: float) -> None:
+        """Watch the attitude under the speed actually being sent and record
+        which way each axis turns. Latest evidence wins."""
+        tel = self.telemetry
+        att = tel.attitude if tel is not None and tel.fresh else None
+        for axis, speed in (("yaw", yaw), ("pitch", pitch)):
+            if att is None or not speed:
+                self._learn_ref[axis] = None
+                continue
+            sign = 1 if speed > 0 else -1
+            angle = getattr(att, axis)
+            ref = self._learn_ref[axis]
+            if ref is None or ref[0] != sign:
+                self._learn_ref[axis] = (sign, angle)
+                continue
+            delta = angle - ref[1]
+            if abs(delta) < LEARN_DEG:
+                continue
+            direction = sign if delta > 0 else -sign
+            if direction != self.axis_dir[axis]:
+                log.info("%s: +speed makes the reported angle %s", axis,
+                         "grow" if direction > 0 else "shrink")
+                self.axis_dir[axis] = direction
+            self._learn_ref[axis] = (sign, angle)
 
     # -------------------------------------------------------------------- loop
 
@@ -282,6 +330,7 @@ class GimbalController:
             return
 
         yaw, pitch = self._apply_soft_limits(self.state.yaw, self.state.pitch)
+        self._learn_direction(yaw, pitch)
 
         if yaw or pitch:
             self._send_speed(yaw, pitch)
@@ -322,6 +371,7 @@ class GimbalController:
             "watchdog_ms": round(self.watchdog * 1000),
             "use_gsm": self.use_gsm,
             "soft_limit_deg": self.soft_limit,
+            "axis_dir": dict(self.axis_dir),
             "running": self._task is not None and not self._task.done(),
             "stats": self.stats.as_dict(),
             "telemetry": self.telemetry.as_dict() if self.telemetry else None,

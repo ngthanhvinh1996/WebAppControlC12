@@ -107,8 +107,12 @@ class C12Simulator:
         chaos_delay: float = 0.0,
         chaos_garbage: float = 0.0,
         seed: int | None = None,
+        yaw_dir: int = 1,
     ) -> None:
         self.state = CameraState()
+        # -1 models a gimbal whose reported yaw shrinks under a positive speed.
+        # No document fixes the sign, so the controller must work either way.
+        self.yaw_dir = yaw_dir
         self.hold_speed = hold_speed
         self.supports_gsm = supports_gsm
         self.chaos_loss = chaos_loss
@@ -349,7 +353,7 @@ class C12Simulator:
             if abs(st.yaw - st.goto_yaw) < 1e-6:
                 st.goto_yaw = None
         else:
-            st.yaw += st.yaw_speed * dt
+            st.yaw += st.yaw_speed * dt * self.yaw_dir
 
         if st.goto_pitch is not None:
             st.pitch = _approach(st.pitch, st.goto_pitch, 60.0 * dt)
