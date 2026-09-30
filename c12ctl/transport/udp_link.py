@@ -104,6 +104,7 @@ class UdpLink:
         self._journal_sinks: list[Callable[[dict], None]] = []
         self._last_tx = 0.0
         self._buffer = ""
+        self._dropped: list[tuple[str, str]] = []
 
         self._log_file = None
         if log_path is not None:
@@ -241,10 +242,17 @@ class UdpLink:
     def feed(self, data: bytes) -> list[Frame]:
         """Feed raw bytes into the frame splitter. Separate so tests need no socket."""
         self._buffer += data.decode("utf-8", errors="replace")
-        frames = split_frames(self._buffer)
+        rejects: list[tuple[int, str, str]] = []
+        frames = split_frames(self._buffer, rejects=rejects)
+        self._dropped = []
         if frames:
             last = self._buffer.rfind(frames[-1].raw)
-            self._buffer = self._buffer[last + len(frames[-1].raw) :]
+            consumed = last + len(frames[-1].raw)
+            # A bad header BEFORE the last good frame is gone for good; one
+            # after it stays in the buffer, since it may be a frame that the
+            # next datagram completes.
+            self._dropped = [(text, why) for at, text, why in rejects if at < consumed]
+            self._buffer = self._buffer[consumed:]
         elif len(self._buffer) > 4096:
             # No frame found and the buffer is growing — drop it, but keep the
             # tail in case a frame was split across two datagrams.
@@ -258,6 +266,13 @@ class UdpLink:
             self.stats.rx_bad += 1
             self._journal("rx-bad", raw)
             return
+        # Corrupt frames riding in the same datagram as good ones used to vanish
+        # without a trace — and "the camera never answered" was then
+        # indistinguishable from "it answered in a shape we could not parse".
+        for text, why in self._dropped:
+            self.stats.rx_bad += 1
+            self._journal("rx-bad", text)
+            log.info("dropped a corrupt frame %r: %s", text, why)
         for frame in frames:
             self.stats.rx += 1
             self.stats.last_rx_at = time.monotonic()

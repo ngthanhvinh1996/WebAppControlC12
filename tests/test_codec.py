@@ -177,6 +177,17 @@ def test_split_skips_bad_checksum_but_keeps_the_rest():
     assert [f.cmd3 for f in split_frames(buf)] == ["GAY"]
 
 
+def test_split_reports_what_it_skipped():
+    """Skipped must not mean unseen: a reply in an unexpected shape has to be
+    readable off the log, or it looks exactly like silence."""
+    rejects = []
+    buf = "#TPUD2rDZM0100" + "#TPUG6wGAY0BB8103E"
+    assert [f.cmd3 for f in split_frames(buf, rejects=rejects)] == ["GAY"]
+    assert len(rejects) == 1
+    at, text, why = rejects[0]
+    assert at == 0 and text == "#TPUD2rDZM0100" and "checksum" in why
+
+
 def test_split_empty_buffer():
     assert split_frames("") == []
 

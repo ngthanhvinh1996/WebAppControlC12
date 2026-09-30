@@ -347,3 +347,30 @@ async def test_port_busy_gives_actionable_error(sim):
     busy = UdpLink("127.0.0.1", sim.port, local_port=sim.port)
     with pytest.raises(PortBusyError, match="ground station"):
         await busy.start()
+
+
+# --------------------------------------------------------------------------
+# Corrupt frames must leave a trace
+# --------------------------------------------------------------------------
+
+
+def test_corrupt_frame_next_to_a_good_one_is_journalled():
+    """A DZM reply in an unexpected shape, packed with a good frame, used to
+    vanish — and then looked exactly like a camera that never answered."""
+    link = UdpLink(dry_run=True)
+    seen = []
+    link.add_journal_sink(seen.append)
+    link._on_datagram(b"#TPDU2rDZM0100#TPUG6wGAY0BB8103E", ("cam", 5000))
+    assert link.stats.rx == 1 and link.stats.rx_bad == 1
+    assert [(r["dir"], r["raw"]) for r in seen] == [
+        ("rx-bad", "#TPDU2rDZM0100"),
+        ("rx", "#TPUG6wGAY0BB8103E"),
+    ]
+
+
+def test_frame_split_across_datagrams_is_not_called_corrupt():
+    link = UdpLink(dry_run=True)
+    link._on_datagram(b"#TPUG6wGAY0BB8103E#TPUD2rVE", ("cam", 5000))
+    assert link.stats.rx_bad == 0
+    link._on_datagram(b"R0051", ("cam", 5000))
+    assert link.stats.rx == 2 and link.stats.rx_bad == 0

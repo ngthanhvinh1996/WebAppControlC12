@@ -35,6 +35,9 @@ TERMINATOR = b"\r\n"
 #: + rw(1) + cmd3(3) + crc(2).
 _OVERHEAD = 12
 
+#: Longest possible frame: the length field is one hex digit, so 15 data chars.
+_MAX_FRAME = _OVERHEAD + 15
+
 _FRAME_START = re.compile(r"#[Tt][Pp]")
 
 
@@ -151,7 +154,10 @@ def parse(text: str, *, verify: bool = True) -> Frame:
     return frame
 
 
-def split_frames(text: str, *, verify: bool = True) -> list[Frame]:
+def split_frames(
+    text: str, *, verify: bool = True,
+    rejects: list[tuple[int, str, str]] | None = None,
+) -> list[Frame]:
     """Split out every valid frame in a buffer.
 
     Does not rely on a delimiter: it locates the header, then cuts exactly
@@ -160,6 +166,9 @@ def split_frames(text: str, *, verify: bool = True) -> list[Frame]:
 
     A corrupt frame is skipped rather than poisoning the whole buffer: one
     mangled packet should not cost us the attitude frame that follows it.
+    Skipped is not the same as unseen, though: pass ``rejects`` and every
+    header that failed to parse is appended as ``(position, text, reason)``,
+    so a reply in a format we did not expect can still be read off the log.
     """
     out: list[Frame] = []
     pos = 0
@@ -170,7 +179,11 @@ def split_frames(text: str, *, verify: bool = True) -> list[Frame]:
         start = m.start()
         try:
             frame = parse(text[start:], verify=verify)
-        except FrameError:
+        except FrameError as exc:
+            if rejects is not None:
+                nxt = _FRAME_START.search(text, start + 1)
+                end = min(nxt.start() if nxt else len(text), start + _MAX_FRAME)
+                rejects.append((start, text[start:end].strip(), str(exc)))
             pos = start + 1
             continue
         out.append(frame)
