@@ -528,14 +528,28 @@ class CameraService:
         started = time.monotonic()
 
         before = None
+        baseline_missing = False
         if spec.needs_before:
+            replies = read_field.replies
             f = await self._read_field(read_field)
-            before = f.value
+            # Only a reply to THIS read is a baseline. A silent read leaves the
+            # cache holding an old value (or None, if the camera never answered)
+            # — comparing against that is guessing, and int(None) used to turn a
+            # silent DZM into "invalid parameter" and block the zoom entirely.
+            if f.replies > replies:
+                before = f.value
+            else:
+                baseline_missing = True
 
-        # Build the expectation BEFORE sending. A bad parameter (unknown palette,
-        # missing baseline) must fail here, while no packet has left the backend.
+        # Build the expectation BEFORE sending. A bad parameter (unknown palette)
+        # must fail here, while no packet has left the backend.
         note = ""
         try:
+            if baseline_missing:
+                raise Unverifiable(
+                    "%s did not answer before the write, so there is no baseline "
+                    "to compare against — the command was sent anyway" % spec.read
+                )
             expectation = spec.expect(tuple(args), before)
         except Unverifiable as exc:
             expectation = None

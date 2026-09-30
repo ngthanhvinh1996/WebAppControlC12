@@ -48,6 +48,19 @@ class DeafWrite(C12Simulator):
         return super().handle(frame)
 
 
+class MuteRead(C12Simulator):
+    """The write works, but the matching read never answers."""
+
+    def __init__(self, *a, mute=(), **kw):
+        super().__init__(*a, **kw)
+        self.mute = set(mute)
+
+    def handle(self, frame):
+        if frame.rw == "r" and frame.cmd3 in self.mute:
+            return None
+        return super().handle(frame)
+
+
 class SlowRecord(C12Simulator):
     """REC really does take effect, but the read-back only sees it a few beats later.
 
@@ -325,6 +338,24 @@ async def test_snap_without_a_card_is_unverifiable_not_failed():
         assert r.ok is None, "unverifiable is not the same as failed"
         assert "card" in r.note
         assert r.frame == "#TPUD2wCAP013E", "the command must still be sent"
+        assert svc.stats.unverified == 1 and svc.stats.mismatched == 0
+    finally:
+        await svc.close()
+        await link.close()
+        await sim.close()
+
+
+@pytest.mark.parametrize("action,after", [("zoom_in", 1), ("zoom_out", 0)])
+async def test_zoom_with_a_silent_read_is_still_sent(action, after):
+    """On the bench DZM never answered and Zoom + failed with "invalid parameter
+    ... int() ... NoneType" — the zoom was blocked by its own verification.
+    A missing baseline means unverified, not refused."""
+    sim, link, svc = await _rig(MuteRead(seed=11, mute={"DZM"}))
+    try:
+        r = await svc.apply(action)
+        assert r.ok is None and r.before is None
+        assert "baseline" in r.note
+        assert sim.state.zoom == after, "the command must still be sent"
         assert svc.stats.unverified == 1 and svc.stats.mismatched == 0
     finally:
         await svc.close()
